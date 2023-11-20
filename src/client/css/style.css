@@ -1,0 +1,29 @@
+body {
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    background-color: black;
+}
+
+canvas {
+    position: absolute;
+    box-sizing: border-box;
+    width: 100vw;
+    height: 100vh;
+    border: 2px solid #aaaaaa;
+}
+
+input {
+    position: absolute;
+    z-index: 10;
+    border: 0;
+    color: #aaaaaa;
+    border-bottom: 2px solid #aaaaaa;
+    outline: 0;
+    background: transparent;
+    font-size: 2rem;
+}
