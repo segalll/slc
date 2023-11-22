@@ -26,7 +26,6 @@ export class Renderer {
     lineWidth: number = 0.001;
 
     constructor(aspectRatio: number) {
-        console.log("construct");
         const canvas = document.getElementById('game') as HTMLCanvasElement;
         const gl = canvas.getContext('webgl2') as WebGL2RenderingContext;
 
