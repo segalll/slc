@@ -3,6 +3,7 @@ import { join, resolve } from "path";
 import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
+import { Game } from "./game";
 
 const randomID = () => randomBytes(8).toString("hex");
 
@@ -16,7 +17,7 @@ const io = new Server(http);
 app.use(express.static(join(__dirname, "../client")))
 
 app.get("/", (req, res) => {
-    res.sendFile(resolve("./src/client/index.html"));
+    res.sendFile(resolve("./dist/client/index.html"));
 })
 
 interface Session {
@@ -47,11 +48,15 @@ io.use((socket: Socket, next) => {
     next();
 })
 
+const game = new Game();
+
 io.on("connection", (socket: Socket) => {
-    sessionStore.set((socket as any).sessionID, {
-        userID: (socket as any).userID,
-        username: (socket as any).username
-    });
+    if (!sessionStore.has((socket as any).sessionID)) {
+        sessionStore.set((socket as any).sessionID, {
+            userID: (socket as any).userID,
+            username: (socket as any).username
+        });
+    }
     socket.emit("session", {
         sessionID: (socket as any).sessionID,
         userID: (socket as any).userID,
@@ -59,7 +64,8 @@ io.on("connection", (socket: Socket) => {
     console.log(`Connection | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
     socket.on("join", () => {
         console.log(`Join | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
-        //socket.emit("game_state", { msg: "hello" })
+        socket.emit("aspect_ratio", 1.5);
+        game.addPlayer(socket);
     })
 })
 

@@ -1,5 +1,6 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
+import { GameState } from "../shared/model";
 
 const socket = io("http://localhost:9001", { autoConnect: false })
 
@@ -27,6 +28,8 @@ const attemptConnection = () => {
 
 attemptConnection();
 
+const renderer = new Renderer(parseFloat(localStorage.getItem("aspectRatio") || "1.0"));
+
 socket.on("session", ({ sessionID, userID }) => {
     localStorage.setItem("sessionID", sessionID);
     socket.auth = { sessionID };
@@ -36,9 +39,13 @@ socket.on("session", ({ sessionID, userID }) => {
 
 socket.on("connect", () => {
     document.querySelector("input")?.remove();
-    const renderer = new Renderer();
-    renderer.renderLoop();
     socket.emit("join");
+    renderer.renderLoop();
+})
+
+socket.on("aspect_ratio", (aspectRatio: number) => {
+    localStorage.setItem("aspectRatio", aspectRatio.toString());
+    renderer.updateAspectRatio(aspectRatio);
 })
 
 socket.on("connect_error", err => {
@@ -46,4 +53,8 @@ socket.on("connect_error", err => {
         localStorage.removeItem("sessionID");
         attemptConnection();
     }
+})
+
+socket.on("game_state", (gameState: GameState) => {
+    renderer.updatePlayer(gameState.userID, gameState.lastSegment, gameState.pointCount);
 })
