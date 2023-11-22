@@ -1,6 +1,6 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
-import { GameState } from "../shared/model";
+import { Direction, GameState } from "../shared/model";
 
 const socket = io("http://localhost:9001", { autoConnect: false })
 
@@ -28,7 +28,7 @@ const attemptConnection = () => {
 
 attemptConnection();
 
-const renderer = new Renderer(parseFloat(localStorage.getItem("aspectRatio") || "1.0"));
+const renderer = new Renderer(parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
 
 socket.on("session", ({ sessionID, userID }) => {
     localStorage.setItem("sessionID", sessionID);
@@ -40,6 +40,17 @@ socket.on("session", ({ sessionID, userID }) => {
 socket.on("connect", () => {
     document.querySelector("input")?.remove();
     socket.emit("join");
+    window.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft") {
+            socket.emit("input", Direction.Left);
+        } else if (e.key === "ArrowRight") {
+            socket.emit("input", Direction.Right);
+        } else if (e.key === "ArrowUp") {
+            socket.emit("input", Direction.Up);
+        } else if (e.key === "ArrowDown") {
+            socket.emit("input", Direction.Down);
+        }
+    });
     renderer.renderLoop();
 })
 
@@ -56,5 +67,5 @@ socket.on("connect_error", err => {
 })
 
 socket.on("game_state", (gameState: GameState) => {
-    renderer.updatePlayer(gameState.userID, gameState.lastSegment, gameState.pointCount);
+    renderer.updatePlayer(gameState.userID, gameState.missingSegments, gameState.missingSegmentStartIndex);
 })

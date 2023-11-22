@@ -1,4 +1,4 @@
-import { Segment } from "../shared/model";
+import { Segments } from "../shared/model";
 
 interface Player {
     vao: WebGLVertexArrayObject;
@@ -26,9 +26,10 @@ export class Renderer {
     lineWidth: number = 0.001;
 
     constructor(aspectRatio: number) {
+        console.log("construct");
         const canvas = document.getElementById('game') as HTMLCanvasElement;
         const gl = canvas.getContext('webgl2') as WebGL2RenderingContext;
-        gl.createBuffer()
+
         const vertexShader = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
         gl.shaderSource(vertexShader,
             `#version 300 es
@@ -84,27 +85,32 @@ export class Renderer {
 
     updateAspectRatio(aspectRatio: number) {
         this.aspectRatio = aspectRatio;
-    }
-
-    resize() {
-        this.gl.canvas.width = window.innerWidth - (2 * 2);
-        this.gl.canvas.height = window.innerHeight - (2 * 2);
-
-        const aspectRatio = this.gl.canvas.width / this.gl.canvas.height;
-        if (aspectRatio > this.aspectRatio) {
-            this.gl.canvas.width = this.gl.canvas.height * this.aspectRatio;
-        } else {
-            this.gl.canvas.height = this.gl.canvas.width / this.aspectRatio;
-        }
-        this.gl.viewport(0, 0, this.gl.canvas.width, this.gl.canvas.height);
-
         const projection = ortho(-aspectRatio, aspectRatio, -1, 1, -1, 1);
         this.gl.bindBuffer(this.gl.UNIFORM_BUFFER, this.mvpUbo);
         this.gl.bufferSubData(this.gl.UNIFORM_BUFFER, 0, new Float32Array(projection));
         this.gl.bindBuffer(this.gl.UNIFORM_BUFFER, null);
     }
 
-    updatePlayer(id: string, lastSegment: Segment, pointCount: number) {
+    resize() {
+        const newWidth = window.innerWidth - 4;
+        const newHeight = window.innerHeight - 4;
+
+        if (Math.abs((this.gl.canvas.width / this.gl.canvas.height) - this.aspectRatio) < 0.002 &&
+            (this.gl.canvas.width === newWidth || this.gl.canvas.height === newHeight) && this.gl.canvas.width <= newWidth && this.gl.canvas.height <= newHeight) {
+            return;
+        }
+
+        if (newWidth / newHeight > this.aspectRatio) {
+            this.gl.canvas.width = newHeight * this.aspectRatio;
+            this.gl.canvas.height = newHeight;
+        } else {
+            this.gl.canvas.width = newWidth;
+            this.gl.canvas.height = newWidth / this.aspectRatio;
+        }
+        this.gl.viewport(0, 0, this.gl.canvas.width, this.gl.canvas.height);
+    }
+
+    updatePlayer(id: string, missingSegments: Segments, missingSegmentStartIndex: number) {
         if (!this.players.has(id)) {
             const vao = this.gl.createVertexArray();
             this.gl.bindVertexArray(vao);
@@ -123,27 +129,33 @@ export class Renderer {
             });
         }
         const player = this.players.get(id)!;
-        player.segment_count = pointCount + 3;
+        player.segment_count = missingSegmentStartIndex + missingSegments.length - 1;
 
         this.gl.bindVertexArray(player.vao);
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        const data = new Float32Array(8);
-        if (lastSegment[0][0] === lastSegment[1][0]) {
-            data.set([
-                lastSegment[0][0] - this.lineWidth, lastSegment[0][1],
-                lastSegment[0][0] + this.lineWidth, lastSegment[0][1],
-                lastSegment[1][0] - this.lineWidth, lastSegment[1][1],
-                lastSegment[1][0] + this.lineWidth, lastSegment[1][1]
-            ]);
-        } else {
-            data.set([
-                lastSegment[0][0], lastSegment[0][1] - this.lineWidth,
-                lastSegment[0][0], lastSegment[0][1] + this.lineWidth,
-                lastSegment[1][0], lastSegment[1][1] - this.lineWidth,
-                lastSegment[1][0], lastSegment[1][1] + this.lineWidth
-            ]);
+        const data = new Float32Array(12 * (missingSegments.length - 1));
+        for (let i = 0; i < missingSegments.length - 1; i++) {
+            if (missingSegments[i][0] === missingSegments[i + 1][0]) {
+                data.set([
+                    missingSegments[i][0] - this.lineWidth, missingSegments[i][1],
+                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1],
+                    missingSegments[i + 1][0] - this.lineWidth, missingSegments[i + 1][1],
+                    missingSegments[i + 1][0] - this.lineWidth, missingSegments[i + 1][1],
+                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1],
+                    missingSegments[i + 1][0] + this.lineWidth, missingSegments[i + 1][1]
+                ], 6 * 2 * i);
+            } else {
+                data.set([
+                    missingSegments[i][0], missingSegments[i][1] - this.lineWidth,
+                    missingSegments[i][0], missingSegments[i][1] + this.lineWidth,
+                    missingSegments[i + 1][0], missingSegments[i + 1][1] - this.lineWidth,
+                    missingSegments[i + 1][0], missingSegments[i + 1][1] - this.lineWidth,
+                    missingSegments[i][0], missingSegments[i][1] + this.lineWidth,
+                    missingSegments[i + 1][0], missingSegments[i + 1][1] + this.lineWidth
+                ], 6 * 2 * i);
+            }
         }
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 2 * 8 * (pointCount - 2), data);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 8 * 6 * missingSegmentStartIndex, data);
         this.gl.bindVertexArray(null);
     }
     
@@ -153,7 +165,7 @@ export class Renderer {
         for (const player of this.players.values()) {
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-            this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 2 * player.segment_count);
+            this.gl.drawArrays(this.gl.TRIANGLES, 0, 6 * player.segment_count);
         }
         requestAnimationFrame(() => this.renderLoop());
     }

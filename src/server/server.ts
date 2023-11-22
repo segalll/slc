@@ -4,6 +4,7 @@ import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
 import { Game } from "./game";
+import { Direction } from "../shared/model";
 
 const randomID = () => randomBytes(8).toString("hex");
 
@@ -66,6 +67,10 @@ io.on("connection", (socket: Socket) => {
         console.log(`Join | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
         socket.emit("aspect_ratio", 1.5);
         game.addPlayer(socket);
+    })
+
+    socket.on("input", (direction: Direction) => {
+        game.processInput((socket as any).userID, direction);
     })
 })
 
