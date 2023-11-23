@@ -1,5 +1,5 @@
 import { Socket } from "socket.io";
-import { Direction, Point, GameState } from "../shared/model";
+import { Direction, Point, GameSettings, GameState } from "../shared/model";
 
 interface Player {
     name: string;
@@ -11,10 +11,17 @@ interface Player {
 
 export class Game {
     players: Map<string, Player>;
+    settings: GameSettings;
+    moveSpeed: number = 0.3;
+    tickRate: number = 50;
 
     constructor() {
         this.players = new Map<string, Player>();
-        setInterval(() => this.gameLoop(), 20);
+        this.settings = {
+            aspectRatio: 1.5,
+            lineWidth: 0.001
+        };
+        setInterval(() => this.gameLoop(), 1000 / this.tickRate);
     }
 
     addPlayer(socket: Socket) {
@@ -52,28 +59,52 @@ export class Game {
             (direction === Direction.Left && lastDirection[1] === 0.0)) {
             return;
         }
+
+        const newPoint = structuredClone(player.points[player.points.length - 1]);
         switch (direction) {
             case Direction.Left:
                 player.direction = [ -1.0, 0.0 ];
+                newPoint[0] -= this.settings.lineWidth;
+                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
+                player.points[player.points.length - 1][1] -= lastDirection[1] * this.settings.lineWidth;
                 break;
             case Direction.Right:
                 player.direction = [ 1.0, 0.0 ];
+                newPoint[0] += this.settings.lineWidth;
+                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
+                player.points[player.points.length - 1][1] -= lastDirection[1] * this.settings.lineWidth;
                 break;
             case Direction.Up:
                 player.direction = [ 0.0, 1.0 ];
+                newPoint[1] += this.settings.lineWidth;
+                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
+                player.points[player.points.length - 1][0] -= lastDirection[0] * this.settings.lineWidth;
                 break;
             case Direction.Down:
                 player.direction = [ 0.0, -1.0 ];
+                newPoint[1] -= this.settings.lineWidth;
+                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
+                player.points[player.points.length - 1][0] -= lastDirection[0] * this.settings.lineWidth;
                 break;
         }
-        player.points.push([ player.points[player.points.length - 1][0], player.points[player.points.length - 1][1] ]);
+        player.points.push(newPoint);
         this.players.set(userID, player);
+    }
+
+    redraw(userID: string) {
+        if (!this.players.has(userID)) {
+            return;
+        }
+        const lastSentPointIndices = this.players.get(userID)!.lastSentPointIndices;
+        for (const id of this.players.keys()) {
+            lastSentPointIndices.set(id, 0);
+        }
     }
 
     gameLoop(this: Game) {
         for (let [id, player] of this.players.entries()) {
-            player.points[player.points.length - 1][0] += player.direction[0] * 0.005;
-            player.points[player.points.length - 1][1] += player.direction[1] * 0.005;
+            player.points[player.points.length - 1][0] += player.direction[0] * this.moveSpeed / this.tickRate;
+            player.points[player.points.length - 1][1] += player.direction[1] * this.moveSpeed / this.tickRate;
 
             const lastSentPointIndex = player.lastSentPointIndices.get(id)!;
             if (lastSentPointIndex < player.points.length - 2) {
@@ -83,7 +114,6 @@ export class Game {
             player.socket.emit("game_state", {
                 userID: id,
                 missingSegments: player.points.slice(lastSentPointIndex),
-                missingSegmentStartIndex: lastSentPointIndex
             } as GameState);
         }
     }

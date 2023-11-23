@@ -1,6 +1,6 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
-import { Direction, GameState } from "../shared/model";
+import { Direction, GameSettings, GameState } from "../shared/model";
 
 const socket = io("http://localhost:9001", { autoConnect: false })
 
@@ -28,7 +28,8 @@ const attemptConnection = () => {
 
 attemptConnection();
 
-const renderer = new Renderer(parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
+const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"), 0.02);
+let previousKey: string | null = null;
 
 socket.on("session", ({ sessionID, userID }) => {
     localStorage.setItem("sessionID", sessionID);
@@ -41,22 +42,27 @@ socket.on("connect", () => {
     document.querySelector("input")?.remove();
     socket.emit("join");
     window.addEventListener("keydown", (e) => {
-        if (e.key === "ArrowLeft") {
+        if (e.key === "ArrowLeft" && previousKey !== "ArrowRight" && previousKey !== "ArrowLeft") {
             socket.emit("input", Direction.Left);
-        } else if (e.key === "ArrowRight") {
+            previousKey = "ArrowLeft";
+        } else if (e.key === "ArrowRight" && previousKey !== "ArrowLeft" && previousKey !== "ArrowRight") {
             socket.emit("input", Direction.Right);
-        } else if (e.key === "ArrowUp") {
+            previousKey = "ArrowRight";
+        } else if (e.key === "ArrowUp" && previousKey !== "ArrowDown" && previousKey !== "ArrowUp") {
             socket.emit("input", Direction.Up);
-        } else if (e.key === "ArrowDown") {
+            previousKey = "ArrowUp";
+        } else if (e.key === "ArrowDown" && previousKey !== "ArrowUp" && previousKey !== "ArrowDown") {
             socket.emit("input", Direction.Down);
+            previousKey = "ArrowDown";
         }
     });
     renderer.renderLoop();
 })
 
-socket.on("aspect_ratio", (aspectRatio: number) => {
-    localStorage.setItem("aspectRatio", aspectRatio.toString());
-    renderer.updateAspectRatio(aspectRatio);
+socket.on("game_settings", (gameSettings: GameSettings) => {
+    localStorage.setItem("aspectRatio", gameSettings.aspectRatio.toString());
+    renderer.updateAspectRatio(gameSettings.aspectRatio);
+    renderer.updateLineWidth(gameSettings.lineWidth);
 })
 
 socket.on("connect_error", err => {
@@ -67,5 +73,5 @@ socket.on("connect_error", err => {
 })
 
 socket.on("game_state", (gameState: GameState) => {
-    renderer.updatePlayer(gameState.userID, gameState.missingSegments, gameState.missingSegmentStartIndex);
+    renderer.updatePlayer(gameState.userID, gameState.missingSegments);
 })

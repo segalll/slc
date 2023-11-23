@@ -1,9 +1,10 @@
+import { Socket } from "socket.io-client";
 import { Segments } from "../shared/model";
 
 interface Player {
     vao: WebGLVertexArrayObject;
     vbo: WebGLBuffer;
-    segment_count: number;
+    segmentCount: number;
 }
 
 const ortho = (left: number, right: number, bottom: number, top: number, near: number, far: number) => {
@@ -19,18 +20,22 @@ const ortho = (left: number, right: number, bottom: number, top: number, near: n
 }
 
 export class Renderer {
+    socket: Socket;
     gl: WebGL2RenderingContext;
-    players: Map<string, Player>;
+    playerProgram: WebGLProgram;
     mvpUbo: WebGLBuffer;
+
+    players: Map<string, Player>;
+    
     aspectRatio: number;
-    lineWidth: number = 0.001;
+    lineWidth: number;
 
-    constructor(aspectRatio: number) {
+    constructor(socket: Socket, aspectRatio: number, lineWidth: number) {
         const canvas = document.getElementById('game') as HTMLCanvasElement;
-        const gl = canvas.getContext('webgl2') as WebGL2RenderingContext;
+        const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true }) as WebGL2RenderingContext;
 
-        const vertexShader = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
-        gl.shaderSource(vertexShader,
+        const playerVertexShader = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
+        gl.shaderSource(playerVertexShader,
             `#version 300 es
             #pragma vscode_glsllint_stage: vert
             precision highp float;
@@ -42,52 +47,57 @@ export class Renderer {
                 gl_Position = projection * vec4(position, 0, 1);
             }`
         );
-        gl.compileShader(vertexShader);
+        gl.compileShader(playerVertexShader);
 
-        const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER) as WebGLShader;
-        gl.shaderSource(fragmentShader,
+        const playerFragmentShader = gl.createShader(gl.FRAGMENT_SHADER) as WebGLShader;
+        gl.shaderSource(playerFragmentShader,
             `#version 300 es
             #pragma vscode_glsllint_stage: frag
             precision lowp float;
             out vec4 color;
             void main() {
-                color = vec4(1, 0, 0, 1);
+                color = vec4(0, 1, 1, 1);
             }`
         );
-        gl.compileShader(fragmentShader);
-        const program = gl.createProgram() as WebGLProgram;
-        gl.attachShader(program, vertexShader);
-        gl.attachShader(program, fragmentShader);
-        gl.linkProgram(program);
-        gl.useProgram(program);
+        gl.compileShader(playerFragmentShader);
+        this.playerProgram = gl.createProgram() as WebGLProgram;
+        gl.attachShader(this.playerProgram, playerVertexShader);
+        gl.attachShader(this.playerProgram, playerFragmentShader);
+        gl.linkProgram(this.playerProgram);
 
-        const mvpBlockIndex = gl.getUniformBlockIndex(program, "MVP");
-        const mvpBlockSize = gl.getActiveUniformBlockParameter(program, mvpBlockIndex, gl.UNIFORM_BLOCK_DATA_SIZE);
+        const mvpBlockIndex = gl.getUniformBlockIndex(this.playerProgram, "MVP");
+        const mvpBlockSize = gl.getActiveUniformBlockParameter(this.playerProgram, mvpBlockIndex, gl.UNIFORM_BLOCK_DATA_SIZE);
         this.mvpUbo = gl.createBuffer()!;
         gl.bindBuffer(gl.UNIFORM_BUFFER, this.mvpUbo);
         gl.bufferData(gl.UNIFORM_BUFFER, mvpBlockSize, gl.DYNAMIC_DRAW);
         gl.bindBuffer(gl.UNIFORM_BUFFER, null);
         gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, this.mvpUbo);
-        gl.uniformBlockBinding(program, mvpBlockIndex, 0);
+        gl.uniformBlockBinding(this.playerProgram, mvpBlockIndex, 0);
 
         gl.clearColor(0, 0, 0, 1);
 
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
+        this.socket = socket;
         this.gl = gl;
         this.players = new Map<string, Player>();
         this.aspectRatio = aspectRatio;
+        this.lineWidth = lineWidth;
 
         this.resize();
     }
 
     updateAspectRatio(aspectRatio: number) {
         this.aspectRatio = aspectRatio;
+
         const projection = ortho(-aspectRatio, aspectRatio, -1, 1, -1, 1);
         this.gl.bindBuffer(this.gl.UNIFORM_BUFFER, this.mvpUbo);
         this.gl.bufferSubData(this.gl.UNIFORM_BUFFER, 0, new Float32Array(projection));
         this.gl.bindBuffer(this.gl.UNIFORM_BUFFER, null);
+
+        this.resize();
+    }
+
+    updateLineWidth(lineWidth: number) {
+        this.lineWidth = lineWidth;
     }
 
     resize() {
@@ -107,9 +117,21 @@ export class Renderer {
             this.gl.canvas.height = newWidth / this.aspectRatio;
         }
         this.gl.viewport(0, 0, this.gl.canvas.width, this.gl.canvas.height);
+
+        // insane hack to get around browser clearing canvas on resize slightly after this function is called
+        // this hopefully means we get our full player data again after the canvas is cleared
+        // this is terrible. a better solution is to render to a framebuffer and then just render the framebuffer on the canvas
+        // unfortunately, webgl decided it was going to filter my framebuffer even though i set the size to the EXACT size of the canvas
+        // normally, filtering would be fine, but in this game with very thin lines, the lines just disappear entirely.
+        // don't ask me why the framebuffer decided to filter. maybe floating point precision issues? but it doesn't make any sense.
+        // the canvas itself is literally implemented with a framebuffer. i decide to create a framebuffer with the exact same size and it gets filtered.
+        // anyway, this is my best solution. i could also just render all the vertices, but that's less efficient :(
+        setTimeout(() => {
+            this.socket.emit("redraw");
+        }, 50);
     }
 
-    updatePlayer(id: string, missingSegments: Segments, missingSegmentStartIndex: number) {
+    updatePlayer(id: string, missingSegments: Segments) {
         if (!this.players.has(id)) {
             const vao = this.gl.createVertexArray();
             this.gl.bindVertexArray(vao);
@@ -124,48 +146,51 @@ export class Renderer {
             this.players.set(id, {
                 vao: vao!,
                 vbo: vbo!,
-                segment_count: 1
+                segmentCount: 1
             });
         }
         const player = this.players.get(id)!;
-        player.segment_count = missingSegmentStartIndex + missingSegments.length - 1;
+        player.segmentCount = missingSegments.length - 1;
 
         this.gl.bindVertexArray(player.vao);
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
         const data = new Float32Array(12 * (missingSegments.length - 1));
         for (let i = 0; i < missingSegments.length - 1; i++) {
             if (missingSegments[i][0] === missingSegments[i + 1][0]) {
+                const multiplier = missingSegments[i][1] < missingSegments[i + 1][1] ? -1 : 1;
                 data.set([
-                    missingSegments[i][0] - this.lineWidth, missingSegments[i][1],
-                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1],
+                    missingSegments[i][0] - this.lineWidth, missingSegments[i][1] + (this.lineWidth * multiplier),
+                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1] + (this.lineWidth * multiplier),
                     missingSegments[i + 1][0] - this.lineWidth, missingSegments[i + 1][1],
                     missingSegments[i + 1][0] - this.lineWidth, missingSegments[i + 1][1],
-                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1],
+                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1] + (this.lineWidth * multiplier),
                     missingSegments[i + 1][0] + this.lineWidth, missingSegments[i + 1][1]
                 ], 6 * 2 * i);
             } else {
+                const multiplier = missingSegments[i][0] < missingSegments[i + 1][0] ? -1 : 1;
                 data.set([
-                    missingSegments[i][0], missingSegments[i][1] - this.lineWidth,
-                    missingSegments[i][0], missingSegments[i][1] + this.lineWidth,
+                    missingSegments[i][0] + (this.lineWidth * multiplier), missingSegments[i][1] - this.lineWidth,
+                    missingSegments[i][0] + (this.lineWidth * multiplier), missingSegments[i][1] + this.lineWidth,
                     missingSegments[i + 1][0], missingSegments[i + 1][1] - this.lineWidth,
                     missingSegments[i + 1][0], missingSegments[i + 1][1] - this.lineWidth,
-                    missingSegments[i][0], missingSegments[i][1] + this.lineWidth,
+                    missingSegments[i][0] + (this.lineWidth * multiplier), missingSegments[i][1] + this.lineWidth,
                     missingSegments[i + 1][0], missingSegments[i + 1][1] + this.lineWidth
                 ], 6 * 2 * i);
             }
         }
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 8 * 6 * missingSegmentStartIndex, data);
-        this.gl.bindVertexArray(null);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, data);
     }
     
     renderLoop() {
         this.resize();
-        this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+
+        this.gl.useProgram(this.playerProgram);
         for (const player of this.players.values()) {
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-            this.gl.drawArrays(this.gl.TRIANGLES, 0, 6 * player.segment_count);
+            this.gl.drawArrays(this.gl.TRIANGLES, 0, 6 * player.segmentCount);
         }
+
         requestAnimationFrame(() => this.renderLoop());
     }
 }

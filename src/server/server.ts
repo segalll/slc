@@ -65,12 +65,16 @@ io.on("connection", (socket: Socket) => {
     console.log(`Connection | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
     socket.on("join", () => {
         console.log(`Join | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
-        socket.emit("aspect_ratio", 1.5);
+        socket.emit("game_settings", game.settings);
         game.addPlayer(socket);
     })
 
     socket.on("input", (direction: Direction) => {
         game.processInput((socket as any).userID, direction);
+    })
+
+    socket.on("redraw", () => {
+        game.redraw((socket as any).userID);
     })
 })
 
