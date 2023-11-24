@@ -10,16 +10,29 @@ const attemptConnection = () => {
         socket.auth = { sessionID };
         socket.connect();
     } else {
+        const joinDataElement = document.createElement("div");
+        joinDataElement.id = "join-data";
+
+        const colorElement = document.createElement("input");
+        colorElement.id = "color";
+        colorElement.type = "color";
+        colorElement.value = "#000000";
+        joinDataElement.appendChild(colorElement);
+
         const usernameElement = document.createElement("input");
+        usernameElement.id = "name";
         usernameElement.type = "text";
         usernameElement.placeholder = "Player name...";
         usernameElement.autofocus = true;
-        document.body.appendChild(usernameElement);
+        joinDataElement.appendChild(usernameElement);
+
+        document.body.appendChild(joinDataElement)
 
         usernameElement.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
                 const username = usernameElement.value;
-                socket.auth = { username };
+                const color = colorElement.value;
+                socket.auth = { username, color };
                 socket.connect();
             }
         })
@@ -29,7 +42,8 @@ const attemptConnection = () => {
 attemptConnection();
 
 const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"), 0.02);
-let previousKey: string | null = null;
+let previousKey: string = "";
+let playing = false;
 
 socket.on("session", ({ sessionID, userID }) => {
     localStorage.setItem("sessionID", sessionID);
@@ -39,9 +53,16 @@ socket.on("session", ({ sessionID, userID }) => {
 })
 
 socket.on("connect", () => {
-    document.querySelector("input")?.remove();
+    document.getElementById("join-data")!.remove();
     socket.emit("join");
     window.addEventListener("keydown", (e) => {
+        if (!playing) {
+            if (e.key === "Enter") {
+                socket.emit("start");
+            }
+            return;
+        }
+
         if (e.key === "ArrowLeft" && previousKey !== "ArrowRight" && previousKey !== "ArrowLeft") {
             socket.emit("input", Direction.Left);
             previousKey = "ArrowLeft";
@@ -73,5 +94,17 @@ socket.on("connect_error", err => {
 })
 
 socket.on("game_state", (gameState: GameState) => {
-    renderer.updatePlayer(gameState.userID, gameState.missingSegments);
+    playing = gameState.playing;
+    for (const player of gameState.players) {
+        renderer.updatePlayer(player);
+    }
+})
+
+socket.on("remove", (id: string) => {
+    renderer.removePlayer(id);
+})
+
+socket.on("starting", () => {
+    renderer.prepareRound();
+    previousKey = "";
 })

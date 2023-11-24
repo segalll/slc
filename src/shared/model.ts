@@ -1,10 +1,18 @@
 export type Point = [x: number, y: number];
 
-export type Segments = [Point, Point, ...Point[]]; // at least two points
+export type Segment = [Point, Point];
 
 export interface GameState {
-    userID: string;
-    missingSegments: Segments;
+    playing: boolean;
+    players: PlayerState[];
+}
+
+export interface PlayerState {
+    id: string;
+    name: string;
+    color: [number, number, number];
+    score: number;
+    missingSegments: Segment[];
 }
 
 export enum Direction {

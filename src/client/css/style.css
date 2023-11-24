@@ -1,28 +1,60 @@
 body {
     margin: 0;
+    overflow: hidden;
+
+    width: 100vw;
+    height: 100vh;
+
     display: flex;
     justify-content: center;
     align-items: center;
-    position: relative;
-    width: 100vw;
-    height: 100vh;
+    flex-direction: column;
+
     background-color: black;
-    overflow: hidden;
+}
+
+#names {
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    flex-direction: row;
+
+    font-family: 'Roboto', sans-serif;
+    font-size: 1.5vw;
+}
+
+pre {
+    margin: 0;
 }
 
 canvas {
-    position: absolute;
     box-sizing: border-box;
     border: 2px solid #aaaaaa;
 }
 
-input {
+#join-data {
     position: absolute;
     z-index: 10;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: row;
+}
+
+#name {
+    background: transparent;
+
     border: 0;
-    color: #aaaaaa;
     border-bottom: 2px solid #aaaaaa;
     outline: 0;
-    background: transparent;
+
+    color: #aaaaaa;
     font-size: 2rem;
+}
+
+#color {
+    width: 3rem;
+    height: 3rem;
+    margin-right: 0.5rem;
 }

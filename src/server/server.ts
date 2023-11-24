@@ -24,6 +24,7 @@ app.get("/", (req, res) => {
 interface Session {
     userID: string;
     username: string;
+    color: string;
 };
 
 const sessionStore = new Map<string, Session>();
@@ -36,6 +37,7 @@ io.use((socket: Socket, next) => {
             (socket as any).sessionID = sessionID;
             (socket as any).userID = session.userID;
             (socket as any).username = session.username;
+            (socket as any).color = session.color;
             return next();
         }
     }
@@ -46,21 +48,23 @@ io.use((socket: Socket, next) => {
     (socket as any).sessionID = randomID();
     (socket as any).userID = randomID();
     (socket as any).username = username;
+    (socket as any).color = socket.handshake.auth.color;
     next();
 })
 
-const game = new Game();
+const game = new Game(io);
 
 io.on("connection", (socket: Socket) => {
     if (!sessionStore.has((socket as any).sessionID)) {
         sessionStore.set((socket as any).sessionID, {
             userID: (socket as any).userID,
-            username: (socket as any).username
+            username: (socket as any).username,
+            color: (socket as any).color,
         });
     }
     socket.emit("session", {
         sessionID: (socket as any).sessionID,
-        userID: (socket as any).userID,
+        userID: (socket as any).userID
     })
     console.log(`Connection | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
     socket.on("join", () => {
@@ -75,6 +79,15 @@ io.on("connection", (socket: Socket) => {
 
     socket.on("redraw", () => {
         game.redraw((socket as any).userID);
+    })
+
+    socket.on("disconnect", () => {
+        console.log(`Disconnect | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
+        game.maybeRemovePlayer((socket as any).userID);
+    })
+
+    socket.on("start", () => {
+        game.startRound();
     })
 })
 

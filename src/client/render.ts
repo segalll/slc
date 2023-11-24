@@ -1,9 +1,11 @@
 import { Socket } from "socket.io-client";
-import { Segments } from "../shared/model";
+import { PlayerState, Segment } from "../shared/model";
 
 interface Player {
     vao: WebGLVertexArrayObject;
     vbo: WebGLBuffer;
+    color: [number, number, number];
+    score: number;
     segmentCount: number;
 }
 
@@ -26,9 +28,12 @@ export class Renderer {
     mvpUbo: WebGLBuffer;
 
     players: Map<string, Player>;
-    
+
     aspectRatio: number;
     lineWidth: number;
+    pendingRedraw: boolean;
+
+    namesElement: HTMLElement;
 
     constructor(socket: Socket, aspectRatio: number, lineWidth: number) {
         const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -54,9 +59,10 @@ export class Renderer {
             `#version 300 es
             #pragma vscode_glsllint_stage: frag
             precision lowp float;
+            uniform vec3 uColor;
             out vec4 color;
             void main() {
-                color = vec4(0, 1, 1, 1);
+                color = vec4(uColor, 1);
             }`
         );
         gl.compileShader(playerFragmentShader);
@@ -76,11 +82,18 @@ export class Renderer {
 
         gl.clearColor(0, 0, 0, 1);
 
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
         this.socket = socket;
         this.gl = gl;
         this.players = new Map<string, Player>();
+
         this.aspectRatio = aspectRatio;
         this.lineWidth = lineWidth;
+        this.pendingRedraw = false;
+
+        this.namesElement = document.getElementById("names")!;
 
         this.resize();
     }
@@ -100,9 +113,15 @@ export class Renderer {
         this.lineWidth = lineWidth;
     }
 
+    removePlayer(id: string) {
+        this.players.delete(id);
+        this.namesElement.removeChild(document.getElementById(id)!);
+        this.pendingRedraw = true;
+    }
+
     resize() {
         const newWidth = window.innerWidth - 4;
-        const newHeight = window.innerHeight - 4;
+        const newHeight = window.innerHeight - document.getElementById("names")!.clientHeight - 4;
 
         if (Math.abs((this.gl.canvas.width / this.gl.canvas.height) - this.aspectRatio) < 0.002 &&
             (this.gl.canvas.width === newWidth || this.gl.canvas.height === newHeight) && this.gl.canvas.width <= newWidth && this.gl.canvas.height <= newHeight) {
@@ -131,8 +150,12 @@ export class Renderer {
         }, 50);
     }
 
-    updatePlayer(id: string, missingSegments: Segments) {
-        if (!this.players.has(id)) {
+    prepareRound() {
+        this.pendingRedraw = true;
+    }
+
+    updatePlayer(playerState: PlayerState) {
+        if (!this.players.has(playerState.id)) {
             const vao = this.gl.createVertexArray();
             this.gl.bindVertexArray(vao);
             
@@ -143,52 +166,77 @@ export class Renderer {
             this.gl.enableVertexAttribArray(0);
             this.gl.vertexAttribPointer(0, 2, this.gl.FLOAT, false, 0, 0);
 
-            this.players.set(id, {
+            this.players.set(playerState.id, {
                 vao: vao!,
                 vbo: vbo!,
-                segmentCount: 1
+                color: playerState.color,
+                score: playerState.score,
+                segmentCount: 0
             });
+
+            const nameElement = document.createElement("pre");
+            nameElement.id = playerState.id;
+            nameElement.innerText = `${playerState.name}: ${playerState.score}`;
+            nameElement.style.color = `rgb(${Math.floor(playerState.color[0] * 255)}, ${Math.floor(playerState.color[1] * 255)}, ${Math.floor(playerState.color[2] * 255)})`;
+            this.namesElement.appendChild(nameElement);
         }
-        const player = this.players.get(id)!;
-        player.segmentCount = missingSegments.length - 1;
+        const player = this.players.get(playerState.id)!;
+        player.segmentCount = playerState.missingSegments.length;
 
         this.gl.bindVertexArray(player.vao);
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        const data = new Float32Array(12 * (missingSegments.length - 1));
-        for (let i = 0; i < missingSegments.length - 1; i++) {
-            if (missingSegments[i][0] === missingSegments[i + 1][0]) {
-                const multiplier = missingSegments[i][1] < missingSegments[i + 1][1] ? -1 : 1;
+        const data = new Float32Array(12 * playerState.missingSegments.length);
+        for (let i = 0; i < playerState.missingSegments.length; i++) {
+            const p1 = playerState.missingSegments[i][0];
+            const p2 = playerState.missingSegments[i][1];
+            if (p1[0] === p2[0]) {
                 data.set([
-                    missingSegments[i][0] - this.lineWidth, missingSegments[i][1] + (this.lineWidth * multiplier),
-                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1] + (this.lineWidth * multiplier),
-                    missingSegments[i + 1][0] - this.lineWidth, missingSegments[i + 1][1],
-                    missingSegments[i + 1][0] - this.lineWidth, missingSegments[i + 1][1],
-                    missingSegments[i][0] + this.lineWidth, missingSegments[i][1] + (this.lineWidth * multiplier),
-                    missingSegments[i + 1][0] + this.lineWidth, missingSegments[i + 1][1]
+                    p1[0] - this.lineWidth, p1[1],
+                    p1[0] + this.lineWidth, p1[1],
+                    p2[0] - this.lineWidth, p2[1],
+                    p2[0] - this.lineWidth, p2[1],
+                    p1[0] + this.lineWidth, p1[1],
+                    p2[0] + this.lineWidth, p2[1]
                 ], 6 * 2 * i);
             } else {
-                const multiplier = missingSegments[i][0] < missingSegments[i + 1][0] ? -1 : 1;
                 data.set([
-                    missingSegments[i][0] + (this.lineWidth * multiplier), missingSegments[i][1] - this.lineWidth,
-                    missingSegments[i][0] + (this.lineWidth * multiplier), missingSegments[i][1] + this.lineWidth,
-                    missingSegments[i + 1][0], missingSegments[i + 1][1] - this.lineWidth,
-                    missingSegments[i + 1][0], missingSegments[i + 1][1] - this.lineWidth,
-                    missingSegments[i][0] + (this.lineWidth * multiplier), missingSegments[i][1] + this.lineWidth,
-                    missingSegments[i + 1][0], missingSegments[i + 1][1] + this.lineWidth
+                    p1[0], p1[1] - this.lineWidth,
+                    p1[0], p1[1] + this.lineWidth,
+                    p2[0], p2[1] - this.lineWidth,
+                    p2[0], p2[1] - this.lineWidth,
+                    p1[0], p1[1] + this.lineWidth,
+                    p2[0], p2[1] + this.lineWidth
                 ], 6 * 2 * i);
             }
         }
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, data);
+
+        if (player.score !== playerState.score) {
+            player.score = playerState.score;
+            const nameElement = document.getElementById(playerState.id)!;
+            nameElement.innerText = `${playerState.name}: ${playerState.score}`;
+        }
     }
     
     renderLoop() {
         this.resize();
 
+        if (this.pendingRedraw) {
+            this.pendingRedraw = false;
+            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+            this.socket.emit("redraw");
+        }
+
         this.gl.useProgram(this.playerProgram);
         for (const player of this.players.values()) {
+            if (player.segmentCount === 0) {
+                continue;
+            }
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
+            this.gl.uniform3fv(this.gl.getUniformLocation(this.playerProgram, "uColor"), player.color);
             this.gl.drawArrays(this.gl.TRIANGLES, 0, 6 * player.segmentCount);
+            player.segmentCount = 0;
         }
 
         requestAnimationFrame(() => this.renderLoop());
