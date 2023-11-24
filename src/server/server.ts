@@ -89,6 +89,10 @@ io.on("connection", (socket: Socket) => {
     socket.on("start", () => {
         game.startRound();
     })
+
+    socket.on("heartbeat", () => {
+        game.heartbeat((socket as any).userID);
+    })
 })
 
 http.listen(port, () => {

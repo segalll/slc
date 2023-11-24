@@ -14,7 +14,7 @@ interface Player {
 
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
-    hasRejoined: boolean; // used to determine if player has rejoined after disconnect
+    pendingDeletion: boolean; // used to determine if player has rejoined after disconnect
 }
 
 const directionVectorFromDirection = (direction: Direction): Point => {
@@ -142,13 +142,24 @@ export class Game {
         if (!this.players.has(id)) {
             return;
         }
-        this.players.get(id)!.hasRejoined = false;
+        if (this.players.get(id)!.pendingDeletion) {
+            // we already processed this player's disconnect
+            return;
+        }
+        this.players.get(id)!.pendingDeletion = true;
         setTimeout(() => {
-            if (!this.players.get(id)!.hasRejoined) {
+            if (this.players.get(id)!.pendingDeletion) {
                 this.players.delete(id);
                 this.server.emit("remove", id);
             }
         }, this.timeout);
+    }
+
+    heartbeat(id: string) {
+        if (!this.players.has(id)) {
+            return;
+        }
+        this.players.get(id)!.pendingDeletion = false;
     }
 
     addPlayer(socket: Socket) {
@@ -184,11 +195,11 @@ export class Game {
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
-                hasRejoined: false
+                pendingDeletion: false
             });
         } else {
             this.players.get((socket as any).userID)!.socket = socket;
-            this.players.get((socket as any).userID)!.hasRejoined = true;
+            this.players.get((socket as any).userID)!.pendingDeletion = false;
             this.redraw((socket as any).userID);
         }
 

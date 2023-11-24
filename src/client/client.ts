@@ -2,7 +2,7 @@ import { io } from "socket.io-client";
 import { Renderer } from "./render";
 import { Direction, GameSettings, GameState } from "../shared/model";
 
-const socket = io("http://localhost:9001", { autoConnect: false })
+const socket = io("https://slc.segal.sh", { autoConnect: false })
 
 const attemptConnection = () => {
     const sessionID = localStorage.getItem("sessionID");
@@ -44,6 +44,7 @@ attemptConnection();
 const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"), 0.02);
 let previousKey: string = "";
 let playing = false;
+let heartbeatInterval: NodeJS.Timeout;
 
 socket.on("session", ({ sessionID, userID }) => {
     localStorage.setItem("sessionID", sessionID);
@@ -53,7 +54,11 @@ socket.on("session", ({ sessionID, userID }) => {
 })
 
 socket.on("connect", () => {
-    document.getElementById("join-data")!.remove();
+    heartbeatInterval = setInterval(() => {
+        socket.emit("heartbeat");
+    }, 1000);
+
+    document.getElementById("join-data")?.remove();
     socket.emit("join");
     window.addEventListener("keydown", (e) => {
         if (!playing) {
