@@ -1,5 +1,4 @@
 import * as express from "express";
-import { join, resolve } from "path";
 import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
@@ -15,10 +14,10 @@ app.set("port", port);
 const http = new HttpServer(app);
 const io = new Server(http);
 
-app.use(express.static(join(__dirname, "../client")))
+app.use(express.static("dist/client"));
 
 app.get("/", (req, res) => {
-    res.sendFile(resolve("./dist/client/index.html"));
+    res.sendFile("dist/client/index.html");
 })
 
 interface Session {

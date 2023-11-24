@@ -4,6 +4,24 @@ import { Direction, GameSettings, GameState } from "../shared/model";
 
 const socket = io("https://slc.segal.sh", { autoConnect: false })
 
+const hslToRgbHex = (h: number, s: number, l: number) => {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    const m = l - c / 2;
+    const rgb = h < 60 ? [c, x, 0] :
+        h < 120 ? [x, c, 0] :
+            h < 180 ? [0, c, x] :
+                h < 240 ? [0, x, c] :
+                    h < 300 ? [x, 0, c] :
+                        [c, 0, x];
+    return "#" + rgb.map(v => Math.floor((v + m) * 255).toString(16).padStart(2, "0")).join("");
+}
+
+const randomColorWithSL = (s: number, l: number) => {
+    const h = Math.random() * 360;
+    return hslToRgbHex(h, s, l);
+}
+
 const attemptConnection = () => {
     const sessionID = localStorage.getItem("sessionID");
     if (sessionID) {
@@ -16,7 +34,7 @@ const attemptConnection = () => {
         const colorElement = document.createElement("input");
         colorElement.id = "color";
         colorElement.type = "color";
-        colorElement.value = "#000000";
+        colorElement.value = randomColorWithSL(1, 0.5);
         joinDataElement.appendChild(colorElement);
 
         const usernameElement = document.createElement("input");

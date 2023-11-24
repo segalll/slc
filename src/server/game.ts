@@ -111,6 +111,9 @@ export class Game {
     }
 
     startRound() {
+        if (this.players.size < 2) {
+            return;
+        }
         for (const player of this.players.values()) {
             const startX = Math.random() * 2 * (this.settings.aspectRatio - this.minSpawnDistanceFromEdge) - this.settings.aspectRatio + this.minSpawnDistanceFromEdge;
             const startY = Math.random() * 2 * (1.0 - this.minSpawnDistanceFromEdge) - 1.0 + this.minSpawnDistanceFromEdge;

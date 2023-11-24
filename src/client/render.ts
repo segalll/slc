@@ -181,7 +181,6 @@ export class Renderer {
             this.namesElement.appendChild(nameElement);
         }
         const player = this.players.get(playerState.id)!;
-        player.segmentCount = playerState.missingSegments.length;
 
         this.gl.bindVertexArray(player.vao);
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
@@ -209,7 +208,9 @@ export class Renderer {
                 ], 6 * 2 * i);
             }
         }
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, data);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 12 * 4 * player.segmentCount, data);
+
+        player.segmentCount += playerState.missingSegments.length;
 
         if (player.score !== playerState.score) {
             player.score = playerState.score;
