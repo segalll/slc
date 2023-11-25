@@ -24,6 +24,7 @@ interface Session {
     userID: string;
     username: string;
     color: string;
+    pendingDeletion: boolean;
 };
 
 const sessionStore = new Map<string, Session>();
@@ -53,12 +54,15 @@ io.use((socket: Socket, next) => {
 
 const game = new Game(io);
 
+const timeout = 3000; // ms
+
 io.on("connection", (socket: Socket) => {
     if (!sessionStore.has((socket as any).sessionID)) {
         sessionStore.set((socket as any).sessionID, {
             userID: (socket as any).userID,
             username: (socket as any).username,
             color: (socket as any).color,
+            pendingDeletion: false
         });
     }
     socket.emit("session", {
@@ -82,7 +86,13 @@ io.on("connection", (socket: Socket) => {
 
     socket.on("disconnect", () => {
         console.log(`Disconnect | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
-        game.maybeRemovePlayer((socket as any).userID);
+        sessionStore.get((socket as any).sessionID)!.pendingDeletion = true;
+        setTimeout(() => {
+            if (sessionStore.get((socket as any).sessionID)?.pendingDeletion) {
+                sessionStore.delete((socket as any).sessionID);
+            }
+            game.removePlayer((socket as any).userID);
+        }, timeout)
     })
 
     socket.on("start", () => {
@@ -90,7 +100,10 @@ io.on("connection", (socket: Socket) => {
     })
 
     socket.on("heartbeat", () => {
-        game.heartbeat((socket as any).userID);
+        if (!sessionStore.has((socket as any).sessionID)) {
+            return;
+        }
+        sessionStore.get((socket as any).sessionID)!.pendingDeletion = false;
     })
 })
 

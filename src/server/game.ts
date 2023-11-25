@@ -45,7 +45,6 @@ export class Game {
     moveSpeed: number = 0.3;
     tickRate: number = 50;
     minSpawnDistanceFromEdge: number = 0.1;
-    timeout: number = 3000; // ms
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
 
@@ -54,7 +53,7 @@ export class Game {
         this.players = new Map<string, Player>();
         this.settings = {
             aspectRatio: 1.5,
-            lineWidth: 0.001
+            lineWidth: 0.002
         };
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
     }
@@ -141,28 +140,12 @@ export class Game {
         this.playing = true;
     }
 
-    maybeRemovePlayer(id: string) {
+    removePlayer(id: string) {
         if (!this.players.has(id)) {
             return;
         }
-        if (this.players.get(id)!.pendingDeletion) {
-            // we already processed this player's disconnect
-            return;
-        }
-        this.players.get(id)!.pendingDeletion = true;
-        setTimeout(() => {
-            if (this.players.get(id)!.pendingDeletion) {
-                this.players.delete(id);
-                this.server.emit("remove", id);
-            }
-        }, this.timeout);
-    }
-
-    heartbeat(id: string) {
-        if (!this.players.has(id)) {
-            return;
-        }
-        this.players.get(id)!.pendingDeletion = false;
+        this.players.delete(id);
+        this.server.emit("remove", id);
     }
 
     addPlayer(socket: Socket) {
@@ -185,6 +168,11 @@ export class Game {
                 ]
             } as GameState);
 
+            const fieldPartitions = new Array<Set<number>>(this.numPartitions * this.numPartitions);
+            for (let i = 0; i < fieldPartitions.length; i++) {
+                fieldPartitions[i] = new Set<number>();
+            }
+
             this.players.set((socket as any).userID, {
                 name,
                 color,
@@ -192,9 +180,9 @@ export class Game {
 
                 direction: [ 0.0, 0.0 ],
                 segments: [],
-                fieldPartitions: [],
+                fieldPartitions: fieldPartitions,
                 currentPartition: -1,
-                dead: false,
+                dead: true,
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
