@@ -90,8 +90,8 @@ io.on("connection", (socket: Socket) => {
         setTimeout(() => {
             if (sessionStore.get((socket as any).sessionID)?.pendingDeletion) {
                 sessionStore.delete((socket as any).sessionID);
+                game.removePlayer((socket as any).userID);
             }
-            game.removePlayer((socket as any).userID);
         }, timeout)
     })
 

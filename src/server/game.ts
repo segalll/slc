@@ -180,7 +180,7 @@ export class Game {
 
                 direction: [ 0.0, 0.0 ],
                 segments: [],
-                fieldPartitions: fieldPartitions,
+                fieldPartitions,
                 currentPartition: -1,
                 dead: true,
 
