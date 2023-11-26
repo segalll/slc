@@ -2,8 +2,7 @@
   "compilerOptions": {
     "target": "ES2016",
     "module": "commonjs",
-    "outDir": "dist",
-    "sourceMap": true,
+    "outDir": "build",
     "strict": true,
     "noImplicitAny": true,
     "moduleResolution": "node",
@@ -17,6 +16,7 @@
     }
   },
   "include": [
-    "src/**/*"
+    "src/server/**/*",
+    "src/shared/**/*"
   ]
 }

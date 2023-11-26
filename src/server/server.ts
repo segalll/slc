@@ -3,7 +3,7 @@ import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
 import { Game } from "./game";
-import { Direction } from "../shared/model";
+import { DirectionInput } from "../shared/model";
 
 const randomID = () => randomBytes(8).toString("hex");
 
@@ -14,10 +14,10 @@ app.set("port", port);
 const http = new HttpServer(app);
 const io = new Server(http);
 
-app.use(express.static("dist/client"));
+app.use(express.static("dist"));
 
 app.get("/", (req, res) => {
-    res.sendFile("dist/client/index.html");
+    res.sendFile("dist/index.html");
 })
 
 interface Session {
@@ -76,8 +76,8 @@ io.on("connection", (socket: Socket) => {
         game.addPlayer(socket);
     })
 
-    socket.on("input", (direction: Direction) => {
-        game.processInput((socket as any).userID, direction);
+    socket.on("input", (input: DirectionInput) => {
+        game.processInput((socket as any).userID, input);
     })
 
     socket.on("redraw", () => {

@@ -1,12 +1,14 @@
 import { Server, Socket } from "socket.io";
-import { Direction, Point, Segment, GameSettings, GameState, PlayerState } from "../shared/model";
+import { directionToVector, Direction, DirectionInput, Point, Segment, GameSettings, GameState, PlayerState, oppositeDirection } from "../shared/model";
 
 interface Player {
+    id: string;
     name: string;
     color: [number, number, number];
     score: number;
 
-    direction: Point; // normalized vector
+    direction: Direction;
+    pendingDirectionInputs: DirectionInput[];
     segments: Segment[];
     fieldPartitions: Set<number>[]; // each partition is a set of indices into segments
     currentPartition: number;
@@ -15,19 +17,6 @@ interface Player {
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
     pendingDeletion: boolean; // used to determine if player has rejoined after disconnect
-}
-
-const directionVectorFromDirection = (direction: Direction): Point => {
-    switch (direction) {
-        case Direction.Left:
-            return [ -1.0, 0.0 ];
-        case Direction.Right:
-            return [ 1.0, 0.0 ];
-        case Direction.Up:
-            return [ 0.0, 1.0 ];
-        case Direction.Down:
-            return [ 0.0, -1.0 ];
-    }
 }
 
 const colorFromHex = (hex: string): [number, number, number] => {
@@ -43,10 +32,11 @@ export class Game {
     settings: GameSettings;
     numPartitions: number = 10; // number of partitions per axis
     moveSpeed: number = 0.3;
-    tickRate: number = 20;
+    tickRate: number = 3;
     minSpawnDistanceFromEdge: number = 0.1;
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
+    lastTickEndTimestamp: number;
 
     constructor(server: Server) {
         this.server = server;
@@ -55,10 +45,11 @@ export class Game {
             aspectRatio: 1.5,
             lineWidth: 0.002
         };
+        this.lastTickEndTimestamp = Date.now();
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
     }
 
-    pointToPartition(point: Point): number {
+    private pointToPartition(point: Point): number {
         const partitionSizeX = 2 * this.settings.aspectRatio / this.numPartitions;
         const partitionSizeY = 2.0 / this.numPartitions;
         const x = Math.floor((point[0] + this.settings.aspectRatio) / partitionSizeX);
@@ -66,7 +57,7 @@ export class Game {
         return y * this.numPartitions + x;
     }
 
-    lineCrossesLine(line1: Segment, line2: Segment): [boolean, Point | null] {
+    private lineCrossesLine(line1: Segment, line2: Segment): [boolean, Point | null] {
         const lineWidth = this.settings.lineWidth;
 
         const line1Vertical = line1[0][0] === line1[1][0];
@@ -126,7 +117,8 @@ export class Game {
             }
             player.fieldPartitions[startPointPartition].add(0);
 
-            player.direction = directionVectorFromDirection(Math.floor(Math.random() * 4));
+            player.pendingDirectionInputs = [];
+            player.direction = Math.floor(Math.random() * 4);
             player.currentPartition = startPointPartition;
             player.dead = false;
 
@@ -138,14 +130,6 @@ export class Game {
 
         this.prevAlive = Array.from(this.players.keys());
         this.playing = true;
-    }
-
-    removePlayer(id: string) {
-        if (!this.players.has(id)) {
-            return;
-        }
-        this.players.delete(id);
-        this.server.emit("remove", id);
     }
 
     addPlayer(socket: Socket) {
@@ -174,11 +158,13 @@ export class Game {
             }
 
             this.players.set((socket as any).userID, {
+                id: (socket as any).userID,
                 name,
                 color,
                 score,
 
-                direction: [ 0.0, 0.0 ],
+                direction: Direction.Up, // doesn't matter, will be overwritten
+                pendingDirectionInputs: [],
                 segments: [],
                 fieldPartitions,
                 currentPartition: -1,
@@ -212,67 +198,46 @@ export class Game {
         }
     }
 
-    processInput(userID: string, direction: Direction) {
-        if (!this.players.has(userID)) {
+    removePlayer(id: string) {
+        if (!this.players.has(id)) {
             return;
         }
-        const player = this.players.get(userID)!;
-
-        const lastDirection = player.direction;
-        if ((direction === Direction.Right && lastDirection[1] === 0.0) ||
-            (direction === Direction.Up && lastDirection[0] === 0.0) ||
-            (direction === Direction.Down && lastDirection[0] === 0.0) ||
-            (direction === Direction.Left && lastDirection[1] === 0.0)) {
-            return;
-        }
-
-        const newPoint: Point = structuredClone(player.segments[player.segments.length - 1][1]);
-        switch (direction) {
-            case Direction.Left:
-                player.direction = [ -1.0, 0.0 ];
-                newPoint[0] -= this.settings.lineWidth;
-                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
-                break;
-            case Direction.Right:
-                player.direction = [ 1.0, 0.0 ];
-                newPoint[0] += this.settings.lineWidth;
-                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
-                break;
-            case Direction.Up:
-                player.direction = [ 0.0, 1.0 ];
-                newPoint[1] += this.settings.lineWidth;
-                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
-                break;
-            case Direction.Down:
-                player.direction = [ 0.0, -1.0 ];
-                newPoint[1] -= this.settings.lineWidth;
-                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
-                break;
-        }
-        player.segments.push([ newPoint, structuredClone(newPoint) ] as Segment);
-        this.players.set(userID, player);
+        this.players.delete(id);
+        this.server.emit("remove", id);
     }
 
-    redraw(userID: string) {
-        if (!this.players.has(userID)) {
+    processInput(id: string, input: DirectionInput) {
+        if (!this.players.has(id) || !this.playing) {
             return;
         }
-        const lastSentSegmentIndices = this.players.get(userID)!.lastSentSegmentIndices;
-        for (const id of this.players.keys()) {
-            lastSentSegmentIndices.set(id, 0);
+
+        const player = this.players.get(id)!;
+        if (player.dead) {
+            return;
         }
+
+        if (player.pendingDirectionInputs.length > 0) {
+            const lastInput = player.pendingDirectionInputs[player.pendingDirectionInputs.length - 1];
+            if (input.direction === lastInput.direction || input.direction === oppositeDirection(lastInput.direction)) {
+                return;
+            }
+        } else {
+            if (input.direction === player.direction || input.direction === oppositeDirection(player.direction)) {
+                return;
+            }
+        }
+        player.pendingDirectionInputs.push({
+            direction: input.direction,
+            sentTimestamp: input.sentTimestamp,
+            receivedTimestamp: Date.now()
+        });
     }
 
-    moveAndCheckCollisions(id: string, player: Player) {
-        let newPoint = structuredClone(player.segments[player.segments.length - 1][1]);
-        newPoint[0] += player.direction[0] * this.moveSpeed / this.tickRate;
-        newPoint[1] += player.direction[1] * this.moveSpeed / this.tickRate;
+    private checkNewSegmentCollision(player: Player, oldSegmentEnd: Point) {
+        let newPoint = player.segments[player.segments.length - 1][1];
 
         if (newPoint[0] < -this.settings.aspectRatio || newPoint[0] > this.settings.aspectRatio || newPoint[1] < -1.0 || newPoint[1] > 1.0) {
             // technically don't have to adjust point since it's not in the canvas anyways
-            // newPoint[0] = Math.max(-this.settings.aspectRatio, Math.min(this.settings.aspectRatio, newPoint[0]));
-            // newPoint[1] = Math.max(-1.0, Math.min(1.0, newPoint[1]));
-            player.segments[player.segments.length - 1][1] = newPoint;
             player.dead = true;
             return;
         }
@@ -286,11 +251,11 @@ export class Game {
         for (const partition of toCheck) {
             for (const [id2, player2] of this.players.entries()) {
                 for (const segmentIndex of player2.fieldPartitions[partition]) {
-                    if (id === id2 && (player.segments.length - 1) - segmentIndex < 2) {
+                    if (player.id === id2 && (player.segments.length - 1) - segmentIndex < 2) {
                         continue;
                     }
 
-                    const checkedSegment = [ player.segments[player.segments.length - 1][1], newPoint ] as Segment;
+                    const checkedSegment = [ oldSegmentEnd, newPoint ] as Segment;
                     const [crosses, fixedPoint] = this.lineCrossesLine(checkedSegment, player2.segments[segmentIndex]);
                     if (crosses) {
                         player.dead = true;
@@ -307,29 +272,119 @@ export class Game {
         player.segments[player.segments.length - 1][1] = newPoint;
     }
 
+    private addSegment(player: Player, direction: Direction) {
+        if (player.dead) {
+            return;
+        }
+
+        const lastDirection = directionToVector(player.direction);
+        if ((direction === Direction.Right && lastDirection[1] === 0.0) ||
+            (direction === Direction.Up && lastDirection[0] === 0.0) ||
+            (direction === Direction.Down && lastDirection[0] === 0.0) ||
+            (direction === Direction.Left && lastDirection[1] === 0.0)) {
+            return;
+        }
+
+        player.direction = direction;
+
+        const newPoint: Point = structuredClone(player.segments[player.segments.length - 1][1]);
+        switch (direction) {
+            case Direction.Left:
+                newPoint[0] -= this.settings.lineWidth;
+                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
+                break;
+            case Direction.Right:
+                newPoint[0] += this.settings.lineWidth;
+                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
+                break;
+            case Direction.Up:
+                newPoint[1] += this.settings.lineWidth;
+                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
+                break;
+            case Direction.Down:
+                newPoint[1] -= this.settings.lineWidth;
+                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
+                break;
+        }
+        player.segments.push([ newPoint, structuredClone(newPoint) ] as Segment);
+    }
+
+    private extendLastSegment(player: Player, length: number) {
+        if (player.dead) {
+            return;
+        }
+
+        const lastSegment = player.segments[player.segments.length - 1];
+        const direction = directionToVector(player.direction);
+        lastSegment[1][0] += direction[0] * length;
+        lastSegment[1][1] += direction[1] * length;
+        this.checkNewSegmentCollision(player, lastSegment[0]);
+    }
+
+    private addSegmentWithLength(player: Player, direction: Direction, length: number) {
+        this.addSegment(player, direction);
+        this.extendLastSegment(player, length);
+    }
+
+    private processPendingInputs(player: Player) {
+        if (player.pendingDirectionInputs.length === 0) {
+            return;
+        }
+
+        const deltaFromTickStartMs = player.pendingDirectionInputs[0].receivedTimestamp - this.lastTickEndTimestamp;
+        const deltaFromTickStart = (this.moveSpeed * deltaFromTickStartMs) / 1000;
+        this.extendLastSegment(player, deltaFromTickStart);
+
+        for (let i = 0; i < player.pendingDirectionInputs.length - 1; i++) {
+            const deltams = player.pendingDirectionInputs[i + 1].sentTimestamp - player.pendingDirectionInputs[i].sentTimestamp;
+            const delta = (this.moveSpeed * deltams) / 1000;
+            this.addSegmentWithLength(player, player.pendingDirectionInputs[i].direction, delta);
+        }
+        const tickTime = (1000 / this.tickRate);
+        const remainingTime = tickTime - (player.pendingDirectionInputs[player.pendingDirectionInputs.length - 1].receivedTimestamp - this.lastTickEndTimestamp);
+        const delta = (this.moveSpeed * remainingTime) / 1000;
+        this.addSegmentWithLength(player, player.pendingDirectionInputs[player.pendingDirectionInputs.length - 1].direction, delta);
+
+        player.pendingDirectionInputs = [];
+    }
+
+    redraw(userID: string) {
+        if (!this.players.has(userID)) {
+            return;
+        }
+        const lastSentSegmentIndices = this.players.get(userID)!.lastSentSegmentIndices;
+        for (const id of this.players.keys()) {
+            lastSentSegmentIndices.set(id, 0);
+        }
+    }
+
     gameLoop() {
         if (!this.playing) {
             return;
         }
 
         const alive = [];
-        for (const [id, player] of this.players.entries()) {
+        for (const player of this.players.values()) {
             if (!player.dead) {
-                alive.push(id);
-                this.moveAndCheckCollisions(id, player);
+                alive.push(player.id);
+                if (player.pendingDirectionInputs.length > 0) {
+                    this.processPendingInputs(player);
+                } else {
+                    this.extendLastSegment(player, this.moveSpeed / this.tickRate);
+                }
             }
 
-            for (const [id2, player2] of this.players.entries()) {
-                const lastSentSegmentIndex = player.lastSentSegmentIndices.get(id2)!;
+            for (const player2 of this.players.values()) {
+                const lastSentSegmentIndex = player.lastSentSegmentIndices.get(player2.id)!;
                 if (lastSentSegmentIndex < player2.segments.length - 1) {
-                    player.lastSentSegmentIndices.set(id2, player2.segments.length - 1);
+                    player.lastSentSegmentIndices.set(player2.id, player2.segments.length - 1);
                 }
 
                 player.socket.emit("game_state", {
                     playing: true,
                     players: [
                         {
-                            id: id2,
+                            id: player2.id,
                             name: player2.name,
                             color: player2.color,
                             score: player2.score,
@@ -367,5 +422,6 @@ export class Game {
         }
 
         this.prevAlive = alive;
+        this.lastTickEndTimestamp = Date.now();
     }
 }

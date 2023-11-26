@@ -22,6 +22,12 @@ export enum Direction {
     Left
 }
 
+export interface DirectionInput {
+    direction: Direction;
+    sentTimestamp: number;
+    receivedTimestamp: number;
+}
+
 export const oppositeDirection = (direction: Direction | null) => {
     switch (direction) {
         case Direction.Up:
@@ -34,6 +40,19 @@ export const oppositeDirection = (direction: Direction | null) => {
             return Direction.Right;
         default:
             return null;
+    }
+}
+
+export const directionToVector = (direction: Direction) => {
+    switch (direction) {
+        case Direction.Up:
+            return [0, 1];
+        case Direction.Right:
+            return [1, 0];
+        case Direction.Down:
+            return [0, -1];
+        case Direction.Left:
+            return [-1, 0];
     }
 }
 

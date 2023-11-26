@@ -1,5 +1,5 @@
 import { Socket } from "socket.io-client";
-import { Direction, oppositeDirection } from "../shared/model";
+import { Direction, DirectionInput, oppositeDirection } from "../shared/model";
 
 export class InputManager {
     socket: Socket;
@@ -27,7 +27,11 @@ export class InputManager {
         if (this.keyMap.has(e.key)) {
             const direction = this.keyMap.get(e.key)!;
             if (direction !== this.previousDirection && direction !== oppositeDirection(this.previousDirection)) {
-                this.socket.emit("input", direction);
+                this.socket.emit("input", {
+                    direction,
+                    sentTimestamp: Date.now(),
+                    receivedTimestamp: 0
+                } as DirectionInput);
                 this.previousDirection = direction;
             }
         }
