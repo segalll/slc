@@ -36,9 +36,6 @@ io.use((socket: Socket, next) => {
         const session = sessionStore.get(sessionID);
         if (session) {
             (socket as any).sessionID = sessionID;
-            (socket as any).userID = session.userID;
-            (socket as any).username = session.username;
-            (socket as any).color = session.color;
             return next();
         }
     }
@@ -47,9 +44,13 @@ io.use((socket: Socket, next) => {
         return next(new Error("invalid session"));
     }
     (socket as any).sessionID = randomID();
-    (socket as any).userID = randomID();
-    (socket as any).username = username;
-    (socket as any).color = socket.handshake.auth.color;
+    sessionStore.set((socket as any).sessionID, {
+        sessionID: (socket as any).sessionID,
+        userID: randomID(),
+        username,
+        color: socket.handshake.auth.color,
+        pendingDeletion: false
+    });
     next();
 })
 
@@ -58,21 +59,9 @@ const game = new Game(io);
 const timeout = 3000; // ms
 
 io.on("connection", (socket: Socket) => {
-    if (!sessionStore.has((socket as any).sessionID)) {
-        sessionStore.set((socket as any).sessionID, {
-            sessionID: (socket as any).sessionID,
-            userID: (socket as any).userID,
-            username: (socket as any).username,
-            color: (socket as any).color,
-            pendingDeletion: false
-        });
-    }
-
     const session = sessionStore.get((socket as any).sessionID)!;
-    socket.emit("session", {
-        sessionID: session.sessionID,
-        userID: session.userID
-    })
+    socket.emit("session", session.sessionID);
+
     console.log(`Connection | ID: ${session.userID}`);
     socket.on("join", () => {
         console.log(`Join | ID: ${session.userID}`);

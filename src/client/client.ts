@@ -63,10 +63,9 @@ attemptConnection();
 const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"), 0.02);
 const inputManager = new InputManager(socket);
 
-socket.on("session", ({ sessionID, userID }) => {
+socket.on("session", (sessionID: string) => {
     localStorage.setItem("sessionID", sessionID);
     socket.auth = { sessionID };
-    (socket as any).userID = userID;
     socket.connect();
 })
 
