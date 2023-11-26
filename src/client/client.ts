@@ -1,6 +1,7 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
-import { Direction, GameSettings, GameState } from "../shared/model";
+import { InputManager } from "./input";
+import { GameSettings, GameState } from "../shared/model";
 
 const socket = io("https://slc.segal.sh", { autoConnect: false })
 
@@ -60,9 +61,7 @@ const attemptConnection = () => {
 attemptConnection();
 
 const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"), 0.02);
-let previousKey: string = "";
-let playing = false;
-let heartbeatInterval: NodeJS.Timeout;
+const inputManager = new InputManager(socket);
 
 socket.on("session", ({ sessionID, userID }) => {
     localStorage.setItem("sessionID", sessionID);
@@ -72,34 +71,13 @@ socket.on("session", ({ sessionID, userID }) => {
 })
 
 socket.on("connect", () => {
-    heartbeatInterval = setInterval(() => {
+    setInterval(() => {
         socket.emit("heartbeat");
     }, 1000);
 
     document.getElementById("join-data")?.remove();
     socket.emit("join");
-    window.addEventListener("keydown", (e) => {
-        if (!playing) {
-            if (e.key === "Enter") {
-                socket.emit("start");
-            }
-            return;
-        }
-
-        if (e.key === "ArrowLeft" && previousKey !== "ArrowRight" && previousKey !== "ArrowLeft") {
-            socket.emit("input", Direction.Left);
-            previousKey = "ArrowLeft";
-        } else if (e.key === "ArrowRight" && previousKey !== "ArrowLeft" && previousKey !== "ArrowRight") {
-            socket.emit("input", Direction.Right);
-            previousKey = "ArrowRight";
-        } else if (e.key === "ArrowUp" && previousKey !== "ArrowDown" && previousKey !== "ArrowUp") {
-            socket.emit("input", Direction.Up);
-            previousKey = "ArrowUp";
-        } else if (e.key === "ArrowDown" && previousKey !== "ArrowUp" && previousKey !== "ArrowDown") {
-            socket.emit("input", Direction.Down);
-            previousKey = "ArrowDown";
-        }
-    });
+    inputManager.start();
     renderer.renderLoop();
 })
 
@@ -117,7 +95,7 @@ socket.on("connect_error", err => {
 })
 
 socket.on("game_state", (gameState: GameState) => {
-    playing = gameState.playing;
+    inputManager.setPlaying(gameState.playing);
     for (const player of gameState.players) {
         renderer.updatePlayer(player);
     }
@@ -129,5 +107,5 @@ socket.on("remove", (id: string) => {
 
 socket.on("starting", () => {
     renderer.prepareRound();
-    previousKey = "";
+    inputManager.resetDirection();
 })

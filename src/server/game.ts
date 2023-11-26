@@ -43,7 +43,7 @@ export class Game {
     settings: GameSettings;
     numPartitions: number = 10; // number of partitions per axis
     moveSpeed: number = 0.3;
-    tickRate: number = 50;
+    tickRate: number = 20;
     minSpawnDistanceFromEdge: number = 0.1;
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
