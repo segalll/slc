@@ -343,13 +343,13 @@ export class Game {
         player.pendingDirectionInputs = [];
     }
 
-    redraw(userID: string) {
-        if (!this.players.has(userID)) {
+    redraw(id: string) {
+        if (!this.players.has(id)) {
             return;
         }
-        const player = this.players.get(userID)!;
-        for (const id of this.players.keys()) {
-            player.lastSentSegmentIndices.set(id, 0);
+        const player = this.players.get(id)!;
+        for (const playerId of this.players.keys()) {
+            player.lastSentSegmentIndices.set(playerId, 0);
         }
         player.pendingRedraw = true;
     }

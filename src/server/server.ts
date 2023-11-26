@@ -79,7 +79,7 @@ io.on("connection", (socket: Socket) => {
 
     socket.on("disconnect", () => {
         console.log(`Disconnect | ID: ${session.userID}`);
-        sessionStore.get(session.sessionID)!.pendingDeletion = true;
+        session.pendingDeletion = true;
         setTimeout(() => {
             if (session.pendingDeletion) {
                 sessionStore.delete(session.sessionID);
