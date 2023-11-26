@@ -16,7 +16,6 @@ interface Player {
 
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
-    pendingDeletion: boolean; // used to determine if player has rejoined after disconnect
     pendingRedraw: boolean;
 }
 
@@ -133,17 +132,16 @@ export class Game {
         this.playing = true;
     }
 
-    addPlayer(socket: Socket) {
-        if (!this.players.has((socket as any).userID)) {
-            const name = (socket as any).username;
-            const color = colorFromHex((socket as any).color);
+    addPlayer(socket: Socket, id: string, name: string, color: string) {
+        if (!this.players.has(id)) {
+            const colorVector = colorFromHex(color);
             const score = 0;
 
             // introduce new player to existing players
             socket.broadcast.emit("modify_player", {
-                id: (socket as any).userID,
+                id,
                 name,
-                color,
+                color: colorVector,
                 score
             } as PlayerInfo);
 
@@ -152,10 +150,10 @@ export class Game {
                 fieldPartitions[i] = new Set<number>();
             }
 
-            this.players.set((socket as any).userID, {
-                id: (socket as any).userID,
+            this.players.set(id, {
+                id,
                 name,
-                color,
+                color: colorVector,
                 score,
 
                 direction: Direction.Up, // doesn't matter, will be overwritten
@@ -167,19 +165,17 @@ export class Game {
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
-                pendingDeletion: false,
                 pendingRedraw: false
             });
         } else {
-            this.players.get((socket as any).userID)!.socket = socket;
-            this.players.get((socket as any).userID)!.pendingDeletion = false;
-            this.redraw((socket as any).userID);
+            this.players.get(id)!.socket = socket;
+            this.redraw(id);
         }
 
         // introduce existing players (including self) to player
-        for (const [id, player] of this.players.entries()) {
+        for (const player of this.players.values()) {
             socket.emit("modify_player", {
-                id,
+                id: player.id,
                 name: player.name,
                 color: player.color,
                 score: player.score
@@ -187,13 +183,13 @@ export class Game {
             socket.emit("game_state", {
                 players: [
                     {
-                        id,
+                        id: player.id,
                         missingSegments: player.segments
                     } as PlayerState
                 ],
                 timestamp: Date.now()
             } as GameState);
-            this.players.get((socket as any).userID)!.lastSentSegmentIndices.set(id, player.segments.length - 1);
+            this.players.get(id)!.lastSentSegmentIndices.set(player.id, player.segments.length - 1);
         }
     }
 

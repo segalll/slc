@@ -21,6 +21,7 @@ app.get("/", (req, res) => {
 })
 
 interface Session {
+    sessionID: string;
     userID: string;
     username: string;
     color: string;
@@ -59,38 +60,41 @@ const timeout = 3000; // ms
 io.on("connection", (socket: Socket) => {
     if (!sessionStore.has((socket as any).sessionID)) {
         sessionStore.set((socket as any).sessionID, {
+            sessionID: (socket as any).sessionID,
             userID: (socket as any).userID,
             username: (socket as any).username,
             color: (socket as any).color,
             pendingDeletion: false
         });
     }
+
+    const session = sessionStore.get((socket as any).sessionID)!;
     socket.emit("session", {
-        sessionID: (socket as any).sessionID,
-        userID: (socket as any).userID
+        sessionID: session.sessionID,
+        userID: session.userID
     })
-    console.log(`Connection | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
+    console.log(`Connection | ID: ${session.userID}`);
     socket.on("join", () => {
-        console.log(`Join | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
+        console.log(`Join | ID: ${session.userID}`);
         socket.emit("game_settings", game.settings);
-        game.addPlayer(socket);
+        game.addPlayer(socket, session.userID, session.username, session.color);
     })
 
     socket.on("input", (input: DirectionInput) => {
-        game.processInput((socket as any).userID, input);
+        game.processInput(session.userID, input);
     })
 
     socket.on("redraw", () => {
-        game.redraw((socket as any).userID);
+        game.redraw(session.userID);
     })
 
     socket.on("disconnect", () => {
-        console.log(`Disconnect | IP: ${socket.handshake.address} | ID: ${(socket as any).userID}`);
-        sessionStore.get((socket as any).sessionID)!.pendingDeletion = true;
+        console.log(`Disconnect | ID: ${session.userID}`);
+        sessionStore.get(session.sessionID)!.pendingDeletion = true;
         setTimeout(() => {
-            if (sessionStore.get((socket as any).sessionID)?.pendingDeletion) {
-                sessionStore.delete((socket as any).sessionID);
-                game.removePlayer((socket as any).userID);
+            if (session.pendingDeletion) {
+                sessionStore.delete(session.sessionID);
+                game.removePlayer(session.userID);
             }
         }, timeout)
     })
@@ -100,10 +104,7 @@ io.on("connection", (socket: Socket) => {
     })
 
     socket.on("heartbeat", () => {
-        if (!sessionStore.has((socket as any).sessionID)) {
-            return;
-        }
-        sessionStore.get((socket as any).sessionID)!.pendingDeletion = false;
+        session.pendingDeletion = false;
     })
 })
 
