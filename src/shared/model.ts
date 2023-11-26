@@ -3,16 +3,20 @@ export type Point = [x: number, y: number];
 export type Segment = [Point, Point];
 
 export interface GameState {
-    playing: boolean;
     players: PlayerState[];
+    timestamp: number;
 }
 
 export interface PlayerState {
     id: string;
+    missingSegments: Segment[];
+}
+
+export interface PlayerInfo {
+    id: string;
     name: string;
     color: [number, number, number];
     score: number;
-    missingSegments: Segment[];
 }
 
 export enum Direction {

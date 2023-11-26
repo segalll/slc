@@ -5,7 +5,6 @@ export class InputManager {
     socket: Socket;
     keyMap: Map<string, Direction>;
     previousDirection: Direction | null = null;
-    playing: boolean = false;
 
     constructor(socket: Socket) {
         this.socket = socket;
@@ -17,11 +16,8 @@ export class InputManager {
     }
     
     private onKeyDown(e: KeyboardEvent) {
-        if (!this.playing) {
-            if (e.key === "Enter") {
-                this.socket.emit("start");
-            }
-            return;
+        if (e.key === "Enter") {
+            this.socket.emit("start");
         }
 
         if (this.keyMap.has(e.key)) {
@@ -39,10 +35,6 @@ export class InputManager {
 
     start() {
         document.addEventListener('keydown', this.onKeyDown.bind(this));
-    }
-
-    setPlaying(playing: boolean) {
-        this.playing = playing;
     }
 
     resetDirection() {

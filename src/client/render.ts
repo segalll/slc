@@ -1,9 +1,10 @@
 import { Socket } from "socket.io-client";
-import { PlayerState, Segment } from "../shared/model";
+import { PlayerInfo, PlayerState, Segment } from "../shared/model";
 
 interface Player {
     vao: WebGLVertexArrayObject;
     vbo: WebGLBuffer;
+    name: string;
     color: [number, number, number];
     score: number;
     segmentCount: number;
@@ -121,7 +122,7 @@ export class Renderer {
 
     resize() {
         const newWidth = window.innerWidth - 4;
-        const newHeight = window.innerHeight - document.getElementById("names")!.clientHeight - 4;
+        const newHeight = window.innerHeight - document.getElementById("names")!.clientHeight - 8;
 
         if (Math.abs((this.gl.canvas.width / this.gl.canvas.height) - this.aspectRatio) < 0.002 &&
             (this.gl.canvas.width === newWidth || this.gl.canvas.height === newHeight) && this.gl.canvas.width <= newWidth && this.gl.canvas.height <= newHeight) {
@@ -154,8 +155,17 @@ export class Renderer {
         this.pendingRedraw = true;
     }
 
-    updatePlayer(playerState: PlayerState) {
-        if (!this.players.has(playerState.id)) {
+    modifyPlayer(playerInfo: PlayerInfo) {
+        if (this.players.has(playerInfo.id)) {
+            const player = this.players.get(playerInfo.id)!;
+            player.name = playerInfo.name;
+            player.color = playerInfo.color;
+            player.score = playerInfo.score;
+
+            const nameElement = document.getElementById(playerInfo.id)!;
+            nameElement.innerText = `${playerInfo.name}: ${playerInfo.score}`;
+            nameElement.style.color = `rgb(${Math.floor(playerInfo.color[0] * 255)}, ${Math.floor(playerInfo.color[1] * 255)}, ${Math.floor(playerInfo.color[2] * 255)})`;
+        } else {
             const vao = this.gl.createVertexArray();
             this.gl.bindVertexArray(vao);
             
@@ -166,20 +176,24 @@ export class Renderer {
             this.gl.enableVertexAttribArray(0);
             this.gl.vertexAttribPointer(0, 2, this.gl.FLOAT, false, 0, 0);
 
-            this.players.set(playerState.id, {
+            this.players.set(playerInfo.id, {
                 vao: vao!,
                 vbo: vbo!,
-                color: playerState.color,
-                score: playerState.score,
+                name: playerInfo.name,
+                color: playerInfo.color,
+                score: playerInfo.score,
                 segmentCount: 0
             });
 
             const nameElement = document.createElement("pre");
-            nameElement.id = playerState.id;
-            nameElement.innerText = `${playerState.name}: ${playerState.score}`;
-            nameElement.style.color = `rgb(${Math.floor(playerState.color[0] * 255)}, ${Math.floor(playerState.color[1] * 255)}, ${Math.floor(playerState.color[2] * 255)})`;
+            nameElement.id = playerInfo.id;
+            nameElement.innerText = `${playerInfo.name}: ${playerInfo.score}`;
+            nameElement.style.color = `rgb(${Math.floor(playerInfo.color[0] * 255)}, ${Math.floor(playerInfo.color[1] * 255)}, ${Math.floor(playerInfo.color[2] * 255)})`;
             this.namesElement.appendChild(nameElement);
         }
+    }
+
+    updatePlayer(playerState: PlayerState) {
         const player = this.players.get(playerState.id)!;
 
         this.gl.bindVertexArray(player.vao);
@@ -211,12 +225,6 @@ export class Renderer {
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 12 * 4 * player.segmentCount, data);
 
         player.segmentCount += playerState.missingSegments.length;
-
-        if (player.score !== playerState.score) {
-            player.score = playerState.score;
-            const nameElement = document.getElementById(playerState.id)!;
-            nameElement.innerText = `${playerState.name}: ${playerState.score}`;
-        }
     }
     
     renderLoop() {

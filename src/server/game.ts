@@ -1,5 +1,5 @@
 import { Server, Socket } from "socket.io";
-import { directionToVector, Direction, DirectionInput, Point, Segment, GameSettings, GameState, PlayerState, oppositeDirection } from "../shared/model";
+import { directionToVector, Direction, DirectionInput, Point, Segment, GameSettings, GameState, PlayerState, oppositeDirection, PlayerInfo } from "../shared/model";
 
 interface Player {
     id: string;
@@ -17,6 +17,7 @@ interface Player {
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
     pendingDeletion: boolean; // used to determine if player has rejoined after disconnect
+    pendingRedraw: boolean;
 }
 
 const colorFromHex = (hex: string): [number, number, number] => {
@@ -101,7 +102,7 @@ export class Game {
     }
 
     startRound() {
-        if (this.players.size < 2) {
+        if (this.playing || this.players.size < 2) {
             return;
         }
         for (const player of this.players.values()) {
@@ -139,18 +140,12 @@ export class Game {
             const score = 0;
 
             // introduce new player to existing players
-            socket.broadcast.emit("game_state", {
-                playing: this.playing,
-                players: [
-                    {
-                        id: (socket as any).userID,
-                        name,
-                        color,
-                        score,
-                        missingSegments: []
-                    } as PlayerState
-                ]
-            } as GameState);
+            socket.broadcast.emit("modify_player", {
+                id: (socket as any).userID,
+                name,
+                color,
+                score
+            } as PlayerInfo);
 
             const fieldPartitions = new Array<Set<number>>(this.numPartitions * this.numPartitions);
             for (let i = 0; i < fieldPartitions.length; i++) {
@@ -172,7 +167,8 @@ export class Game {
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
-                pendingDeletion: false
+                pendingDeletion: false,
+                pendingRedraw: false
             });
         } else {
             this.players.get((socket as any).userID)!.socket = socket;
@@ -182,17 +178,20 @@ export class Game {
 
         // introduce existing players (including self) to player
         for (const [id, player] of this.players.entries()) {
+            socket.emit("modify_player", {
+                id,
+                name: player.name,
+                color: player.color,
+                score: player.score
+            } as PlayerInfo);
             socket.emit("game_state", {
-                playing: this.playing,
                 players: [
                     {
                         id,
-                        name: player.name,
-                        color: player.color,
-                        score: player.score,
                         missingSegments: player.segments
                     } as PlayerState
-                ]
+                ],
+                timestamp: Date.now()
             } as GameState);
             this.players.get((socket as any).userID)!.lastSentSegmentIndices.set(id, player.segments.length - 1);
         }
@@ -352,14 +351,40 @@ export class Game {
         if (!this.players.has(userID)) {
             return;
         }
-        const lastSentSegmentIndices = this.players.get(userID)!.lastSentSegmentIndices;
+        const player = this.players.get(userID)!;
         for (const id of this.players.keys()) {
-            lastSentSegmentIndices.set(id, 0);
+            player.lastSentSegmentIndices.set(id, 0);
+        }
+        player.pendingRedraw = true;
+    }
+
+    private sendGameState(player: Player) {
+        for (const player2 of this.players.values()) {
+            const lastSentSegmentIndex = player.lastSentSegmentIndices.get(player2.id)!;
+            if (lastSentSegmentIndex < player2.segments.length - 1) {
+                player.lastSentSegmentIndices.set(player2.id, player2.segments.length - 1);
+            }
+
+            player.socket.emit("game_state", {
+                players: [
+                    {
+                        id: player2.id,
+                        missingSegments: player2.segments.slice(lastSentSegmentIndex),
+                    } as PlayerState
+                ],
+                timestamp: Date.now()
+            } as GameState);
         }
     }
 
     gameLoop() {
         if (!this.playing) {
+            for (const player of this.players.values()) {
+                if (player.pendingRedraw) {
+                    player.pendingRedraw = false;
+                    this.sendGameState(player);
+                }
+            }
             return;
         }
 
@@ -374,50 +399,22 @@ export class Game {
                 }
             }
 
-            for (const player2 of this.players.values()) {
-                const lastSentSegmentIndex = player.lastSentSegmentIndices.get(player2.id)!;
-                if (lastSentSegmentIndex < player2.segments.length - 1) {
-                    player.lastSentSegmentIndices.set(player2.id, player2.segments.length - 1);
-                }
-
-                player.socket.emit("game_state", {
-                    playing: true,
-                    players: [
-                        {
-                            id: player2.id,
-                            name: player2.name,
-                            color: player2.color,
-                            score: player2.score,
-                            missingSegments: player2.segments.slice(lastSentSegmentIndex),
-                        } as PlayerState
-                    ]
-                } as GameState);
-            }
+            this.sendGameState(player);
         }
 
         if (alive.length <= 1) {
             this.playing = false;
-            if (alive.length === 1) {
-                this.players.get(alive[0])!.score++;
-            } else {
-                for (const id of this.prevAlive) {
-                    this.players.get(id)!.score++;
-                }
-            }
 
-            for (const [id, player] of this.players.entries()) {
-                this.server.emit("game_state", {
-                    playing: false,
-                    players: [
-                        {
-                            id,
-                            name: player.name,
-                            color: player.color,
-                            score: player.score,
-                            missingSegments: []
-                        } as PlayerState
-                    ]
-                } as GameState);
+            const winners = alive.length === 1 ? alive : this.prevAlive;
+            for (const id of winners) {
+                const player = this.players.get(id)!;
+                player.score++;
+                this.server.emit("modify_player", {
+                    id,
+                    name: player.name,
+                    color: player.color,
+                    score: player.score
+                } as PlayerInfo);
             }
         }
 

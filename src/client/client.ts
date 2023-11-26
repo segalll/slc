@@ -1,7 +1,7 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
 import { InputManager } from "./input";
-import { GameSettings, GameState } from "../shared/model";
+import { GameSettings, GameState, PlayerInfo } from "../shared/model";
 
 const socket = io("https://slc.segal.sh", { autoConnect: false })
 
@@ -95,10 +95,13 @@ socket.on("connect_error", err => {
 })
 
 socket.on("game_state", (gameState: GameState) => {
-    inputManager.setPlaying(gameState.playing);
     for (const player of gameState.players) {
         renderer.updatePlayer(player);
     }
+})
+
+socket.on("modify_player", (playerInfo: PlayerInfo) => {
+    renderer.modifyPlayer(playerInfo);
 })
 
 socket.on("remove", (id: string) => {
