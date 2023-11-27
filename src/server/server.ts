@@ -3,7 +3,7 @@ import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
 import { Game } from "./game";
-import { DirectionInput } from "../shared/model";
+import { Direction } from "../shared/model";
 
 const randomID = () => randomBytes(8).toString("hex");
 
@@ -69,8 +69,8 @@ io.on("connection", (socket: Socket) => {
         game.addPlayer(socket, session.userID, session.username, session.color);
     })
 
-    socket.on("input", (input: DirectionInput) => {
-        game.processInput(session.userID, input);
+    socket.on("input", (direction: Direction) => {
+        game.processInput(session.userID, direction);
     })
 
     socket.on("redraw", () => {

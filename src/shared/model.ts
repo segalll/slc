@@ -28,7 +28,6 @@ export enum Direction {
 
 export interface DirectionInput {
     direction: Direction;
-    sentTimestamp: number;
     receivedTimestamp: number;
 }
 

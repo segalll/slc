@@ -23,11 +23,7 @@ export class InputManager {
         if (this.keyMap.has(e.key)) {
             const direction = this.keyMap.get(e.key)!;
             if (direction !== this.previousDirection && direction !== oppositeDirection(this.previousDirection)) {
-                this.socket.emit("input", {
-                    direction,
-                    sentTimestamp: Date.now(),
-                    receivedTimestamp: 0
-                } as DirectionInput);
+                this.socket.emit("input", direction);
                 this.previousDirection = direction;
             }
         }
