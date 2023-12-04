@@ -3,7 +3,7 @@ import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
 import { Game } from "./game";
-import { Direction } from "../shared/model";
+import { Direction, GameSettings } from "../shared/model";
 
 const randomID = () => randomBytes(8).toString("hex");
 
@@ -65,7 +65,12 @@ io.on("connection", (socket: Socket) => {
     console.log(`Connection | ID: ${session.userID}`);
     socket.on("join", () => {
         console.log(`Join | ID: ${session.userID}`);
-        socket.emit("game_settings", game.settings);
+        socket.emit("game_settings", {
+            aspectRatio: game.aspectRatio,
+            lineWidth: game.lineWidth,
+            tickRate: game.tickRate,
+            moveSpeed: game.moveSpeed
+        } as GameSettings);
         game.addPlayer(socket, session.userID, session.username, session.color);
     })
 

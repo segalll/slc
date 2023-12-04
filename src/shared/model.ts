@@ -62,4 +62,6 @@ export const directionToVector = (direction: Direction) => {
 export interface GameSettings {
     aspectRatio: number;
     lineWidth: number;
+    tickRate: number;
+    moveSpeed: number;
 }

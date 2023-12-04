@@ -60,7 +60,7 @@ const attemptConnection = () => {
 
 attemptConnection();
 
-const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"), 0.02);
+const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
 const inputManager = new InputManager(socket);
 
 socket.on("session", (sessionID: string) => {
@@ -82,8 +82,7 @@ socket.on("connect", () => {
 
 socket.on("game_settings", (gameSettings: GameSettings) => {
     localStorage.setItem("aspectRatio", gameSettings.aspectRatio.toString());
-    renderer.updateAspectRatio(gameSettings.aspectRatio);
-    renderer.updateLineWidth(gameSettings.lineWidth);
+    renderer.updateGameSettings(gameSettings);
 })
 
 socket.on("connect_error", err => {
@@ -95,7 +94,7 @@ socket.on("connect_error", err => {
 
 socket.on("game_state", (gameState: GameState) => {
     for (const player of gameState.players) {
-        renderer.updatePlayer(player);
+        renderer.updatePlayer(player, gameState.timestamp);
     }
 })
 

@@ -1,5 +1,5 @@
 import { Server, Socket } from "socket.io";
-import { directionToVector, Direction, DirectionInput, Point, Segment, GameSettings, GameState, PlayerState, oppositeDirection, PlayerInfo } from "../shared/model";
+import { directionToVector, Direction, DirectionInput, Point, Segment, GameState, PlayerState, oppositeDirection, PlayerInfo } from "../shared/model";
 
 interface Player {
     id: string;
@@ -28,12 +28,15 @@ const colorFromHex = (hex: string): [number, number, number] => {
 export class Game {
     server: Server;
     players: Map<string, Player>;
-    settings: GameSettings;
+
     numPartitions: number = 10; // number of partitions per axis
     moveSpeed: number = 0.3;
-    tickRate: number = 5;
-    subTickRate: number = 40;
+    tickRate: number = 20;
+    subTickRate: number = 10;
+    aspectRatio: number = 1.5;
+    lineWidth: number = 0.002;
     minSpawnDistanceFromEdge: number = 0.1;
+
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
     lastTickEndTimestamp: number;
@@ -42,39 +45,35 @@ export class Game {
     constructor(server: Server) {
         this.server = server;
         this.players = new Map<string, Player>();
-        this.settings = {
-            aspectRatio: 1.5,
-            lineWidth: 0.002
-        };
         this.lastTickEndTimestamp = Date.now();
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
     }
 
     private pointToPartition(point: Point): number {
-        const partitionSizeX = 2 * this.settings.aspectRatio / this.numPartitions;
+        const partitionSizeX = 2 * this.aspectRatio / this.numPartitions;
         const partitionSizeY = 2.0 / this.numPartitions;
-        const x = Math.floor((point[0] + this.settings.aspectRatio) / partitionSizeX);
+        const x = Math.floor((point[0] + this.aspectRatio) / partitionSizeX);
         const y = Math.floor((point[1] + 1.0) / partitionSizeY);
         return y * this.numPartitions + x;
     }
 
     private segmentToPartitions(segment: Segment): number[] {
-        const partitionSizeX = 2 * this.settings.aspectRatio / this.numPartitions;
+        const partitionSizeX = 2 * this.aspectRatio / this.numPartitions;
         const partitionSizeY = 2.0 / this.numPartitions;
-        const x1 = (segment[0][0] + this.settings.aspectRatio) / partitionSizeX;
+        const x1 = (segment[0][0] + this.aspectRatio) / partitionSizeX;
         const y1 = (segment[0][1] + 1.0) / partitionSizeY;
-        const x2 = (segment[1][0] + this.settings.aspectRatio) / partitionSizeX;
+        const x2 = (segment[1][0] + this.aspectRatio) / partitionSizeX;
         const y2 = (segment[1][1] + 1.0) / partitionSizeY;
         const partitions: number[] = [];
         if (x1 === x2) {
-            const width = this.settings.lineWidth / partitionSizeX;
+            const width = this.lineWidth / partitionSizeX;
             for (let y = Math.floor(Math.min(y1, y2)); y <= Math.floor(Math.max(y1, y2)); y++) {
                 for (let x = Math.floor(Math.min(x1, x2) - width); x <= Math.floor(Math.max(x1, x2) + width); x++) {
                     partitions.push(y * this.numPartitions + x);
                 }
             }
         } else if (y1 === y2) {
-            const width = this.settings.lineWidth / partitionSizeY;
+            const width = this.lineWidth / partitionSizeY;
             for (let x = Math.floor(Math.min(x1, x2)); x <= Math.floor(Math.max(x1, x2)); x++) {
                 for (let y = Math.floor(Math.min(y1, y2) - width); y <= Math.floor(Math.max(y1, y2) + width); y++) {
                     partitions.push(y * this.numPartitions + x);
@@ -85,7 +84,7 @@ export class Game {
     }
 
     private lineToLineCollision(line1: Segment, line2: Segment): [Point | null, Point | null] {
-        const lineWidth = this.settings.lineWidth;
+        const lineWidth = this.lineWidth;
 
         const line1Vertical = line1[0][0] === line1[1][0];
         const line2Vertical = line2[0][0] === line2[1][0];
@@ -136,7 +135,7 @@ export class Game {
             return;
         }
         for (const player of this.players.values()) {
-            const startX = Math.random() * 2 * (this.settings.aspectRatio - this.minSpawnDistanceFromEdge) - this.settings.aspectRatio + this.minSpawnDistanceFromEdge;
+            const startX = Math.random() * 2 * (this.aspectRatio - this.minSpawnDistanceFromEdge) - this.aspectRatio + this.minSpawnDistanceFromEdge;
             const startY = Math.random() * 2 * (1.0 - this.minSpawnDistanceFromEdge) - 1.0 + this.minSpawnDistanceFromEdge;
             const startPoint: Point = [ startX, startY ];
             const startPointPartition = this.pointToPartition(startPoint);
@@ -275,20 +274,20 @@ export class Game {
         const newPoint: Point = structuredClone(player.segments[player.segments.length - 1][1]);
         switch (direction) {
             case Direction.Left:
-                newPoint[0] -= this.settings.lineWidth;
-                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
+                newPoint[0] -= this.lineWidth;
+                newPoint[1] -= lastDirection[1] * this.lineWidth;
                 break;
             case Direction.Right:
-                newPoint[0] += this.settings.lineWidth;
-                newPoint[1] -= lastDirection[1] * this.settings.lineWidth;
+                newPoint[0] += this.lineWidth;
+                newPoint[1] -= lastDirection[1] * this.lineWidth;
                 break;
             case Direction.Up:
-                newPoint[1] += this.settings.lineWidth;
-                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
+                newPoint[1] += this.lineWidth;
+                newPoint[0] -= lastDirection[0] * this.lineWidth;
                 break;
             case Direction.Down:
-                newPoint[1] -= this.settings.lineWidth;
-                newPoint[0] -= lastDirection[0] * this.settings.lineWidth;
+                newPoint[1] -= this.lineWidth;
+                newPoint[0] -= lastDirection[0] * this.lineWidth;
                 break;
         }
         player.segments.push([ newPoint, structuredClone(newPoint) ] as Segment);
@@ -306,7 +305,7 @@ export class Game {
         lastSegment[1][0] += direction[0] * spatialLength;
         lastSegment[1][1] += direction[1] * spatialLength;
 
-        if (lastSegment[1][0] < -this.settings.aspectRatio || lastSegment[1][0] > this.settings.aspectRatio || lastSegment[1][1] < -1.0 || lastSegment[1][1] > 1.0) {
+        if (lastSegment[1][0] < -this.aspectRatio || lastSegment[1][0] > this.aspectRatio || lastSegment[1][1] < -1.0 || lastSegment[1][1] > 1.0) {
             player.dead = true;
             return;
         }
