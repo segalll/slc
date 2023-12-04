@@ -62,6 +62,10 @@ attemptConnection();
 
 const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
 const inputManager = new InputManager(socket);
+const roundOver = new Audio("/snd/round_over.wav");
+roundOver.volume = 0.5;
+const countdown = new Audio("/snd/countdown.wav");
+countdown.volume = 0.5;
 
 socket.on("session", (sessionID: string) => {
     localStorage.setItem("sessionID", sessionID);
@@ -108,5 +112,9 @@ socket.on("remove", (id: string) => {
 
 socket.on("starting", () => {
     renderer.prepareRound();
-    inputManager.resetDirection();
+    countdown.play();
+})
+
+socket.on("round_over", () => {
+    roundOver.play();
 })

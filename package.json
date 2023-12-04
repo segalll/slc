@@ -7,7 +7,7 @@
     "clean": "rimraf build/* dist/*",
     "tsc-dev": "tsc --sourceMap",
     "tsc-prod": "tsc",
-    "dist": "mkdir -p dist && cp -R src/client/index.html src/client/css dist",
+    "dist": "mkdir -p dist && cp -R src/client/index.html src/client/css src/client/snd dist",
     "bundle-dev": "esbuild src/client/client.ts --bundle --minify --sourcemap --outfile=dist/client.js",
     "bundle-prod": "esbuild src/client/client.ts --bundle --minify --outfile=dist/client.js",
     "build-dev": "npm-run-all clean tsc-dev dist bundle-dev",

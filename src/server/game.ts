@@ -7,6 +7,7 @@ interface Player {
     color: [number, number, number];
     score: number;
 
+    startingDirection: Direction | null;
     direction: Direction;
     pendingDirectionInputs: DirectionInput[];
     segments: Segment[];
@@ -31,8 +32,8 @@ export class Game {
 
     numPartitions: number = 10; // number of partitions per axis
     moveSpeed: number = 0.3;
-    tickRate: number = 20;
-    subTickRate: number = 10;
+    tickRate: number = 25;
+    subTickRate: number = 4;
     aspectRatio: number = 1.5;
     lineWidth: number = 0.002;
     minSpawnDistanceFromEdge: number = 0.1;
@@ -137,17 +138,22 @@ export class Game {
             const startX = Math.random() * 2 * (this.aspectRatio - this.minSpawnDistanceFromEdge) - this.aspectRatio + this.minSpawnDistanceFromEdge;
             const startY = Math.random() * 2 * (1.0 - this.minSpawnDistanceFromEdge) - 1.0 + this.minSpawnDistanceFromEdge;
             const startPoint: Point = [ startX, startY ];
-            const startPointPartition = this.pointToPartition(startPoint);
 
-            player.segments = [[ startPoint, structuredClone(startPoint) ] as Segment];
+            player.direction = Math.floor(Math.random() * 4);
+            const directionVector = directionToVector(player.direction);
+            const endPoint: Point = [ startPoint[0] + directionVector[0] * this.lineWidth, startPoint[1] + directionVector[1] * this.lineWidth ];
+            const segment = [ startPoint, endPoint ] as Segment;
+
+            player.segments = [segment];
             player.fieldPartitions = new Array<Set<number>>(this.numPartitions * this.numPartitions);
             for (let i = 0; i < player.fieldPartitions.length; i++) {
                 player.fieldPartitions[i] = new Set<number>();
             }
-            player.fieldPartitions[startPointPartition].add(0);
+            for (const partition of this.segmentToPartitions(segment)) {
+                player.fieldPartitions[partition].add(0);
+            }
 
             player.pendingDirectionInputs = [];
-            player.direction = Math.floor(Math.random() * 4);
             player.dead = false;
 
             for (const id of this.players.keys()) {
@@ -157,7 +163,18 @@ export class Game {
         this.server.emit("starting");
 
         this.prevAlive = Array.from(this.players.keys());
-        this.playing = true;
+        setTimeout(() => {
+            for (const player of this.players.values()) {
+                if (player.startingDirection !== null) {
+                    player.direction = player.startingDirection;
+                    const directionVector = directionToVector(player.direction);
+                    const startPoint = player.segments[0][0];
+                    const endPoint: Point = [ startPoint[0] + directionVector[0] * this.lineWidth, startPoint[1] + directionVector[1] * this.lineWidth ];
+                    player.segments = [[ startPoint, endPoint ] as Segment];
+                }
+            }
+            this.playing = true;
+        }, 3000);
     }
 
     addPlayer(socket: Socket, id: string, name: string, color: string) {
@@ -184,6 +201,7 @@ export class Game {
                 color: colorVector,
                 score,
 
+                startingDirection: null,
                 direction: Direction.Up, // doesn't matter, will be overwritten
                 pendingDirectionInputs: [],
                 segments: [],
@@ -228,11 +246,15 @@ export class Game {
     }
 
     processInput(id: string, direction: Direction) {
-        if (!this.players.has(id) || !this.playing) {
+        if (!this.players.has(id)) {
             return;
         }
 
         const player = this.players.get(id)!;
+        if (!this.playing) {
+            player.startingDirection = direction;
+            return;
+        }
         if (player.dead) {
             return;
         }
@@ -389,6 +411,7 @@ export class Game {
                 for (const id of winners) {
                     const player = this.players.get(id)!;
                     player.score++;
+                    this.server.emit("round_over");
                     this.server.emit("modify_player", {
                         id,
                         name: player.name,
@@ -404,6 +427,7 @@ export class Game {
 
         for (const player of this.players.values()) {
             player.pendingRedraw = false;
+            player.startingDirection = null;
             this.sendGameState(player);
         }
 
