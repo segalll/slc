@@ -1,13 +1,6 @@
 import { Server, Socket } from "socket.io";
 import { directionToVector, Direction, DirectionInput, Point, Segment, GameSettings, GameState, PlayerState, oppositeDirection, PlayerInfo } from "../shared/model";
 
-interface RecentlyAddedSegment {
-    startPoint: Point;
-    index: number;
-    duration: number;
-    startTime: number;
-}
-
 interface Player {
     id: string;
     name: string;
@@ -19,8 +12,6 @@ interface Player {
     segments: Segment[];
     fieldPartitions: Set<number>[]; // each partition is a set of indices into segments
     dead: boolean;
-    deathTime: number;
-    recentlyAddedSegments: RecentlyAddedSegment[];
 
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
@@ -34,34 +25,14 @@ const colorFromHex = (hex: string): [number, number, number] => {
     return [ r, g, b ];
 }
 
-const linterpTimeFromSegment = (segment: Segment, x: Point, duration: number, startTime: number): number => {
-    const [[x1, y1], [x2, y2]] = segment;
-
-    let t: number;
-    if (x2 === x1) { // vertical line
-        t = (x[1] - y1) / (y2 - y1);
-    } else { // horizontal line
-        t = (x[0] - x1) / (x2 - x1);
-    }
-
-    return startTime + (t * duration);
-}
-
-const linterpSegmentFromTime = (segment: Segment, t: number, duration: number): Point => {
-    const [[x1, y1], [x2, y2]] = segment;
-    return [
-        x1 + (x2 - x1) * t / duration,
-        y1 + (y2 - y1) * t / duration
-    ];
-}
-
 export class Game {
     server: Server;
     players: Map<string, Player>;
     settings: GameSettings;
     numPartitions: number = 10; // number of partitions per axis
     moveSpeed: number = 0.3;
-    tickRate: number = 4;
+    tickRate: number = 5;
+    subTickRate: number = 40;
     minSpawnDistanceFromEdge: number = 0.1;
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
@@ -73,19 +44,10 @@ export class Game {
         this.players = new Map<string, Player>();
         this.settings = {
             aspectRatio: 1.5,
-            lineWidth: 0.01
+            lineWidth: 0.002
         };
         this.lastTickEndTimestamp = Date.now();
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
-    }
-
-    private adjustDeathTimeForHeadOn(segment1: Segment, segment2: Segment, deathTime: number): number {
-        const [[x11, y11], [x12, y12]] = segment1;
-        const [[x21, y21], [x22, y22]] = segment2;
-
-        const overlapPosition = (x11 === x12) ? (y12 + y22) / 2 : (x12 + x22) / 2;
-        const overlapDelta = (x11 === x12) ? Math.abs(y22 - overlapPosition) : Math.abs(x22 - overlapPosition);
-        return deathTime + (1000 * overlapDelta / this.moveSpeed);
     }
 
     private pointToPartition(point: Point): number {
@@ -189,7 +151,6 @@ export class Game {
             player.pendingDirectionInputs = [];
             player.direction = Math.floor(Math.random() * 4);
             player.dead = false;
-            player.deathTime = Number.MAX_VALUE;
 
             for (const id of this.players.keys()) {
                 player.lastSentSegmentIndices.set(id, 0);
@@ -230,8 +191,6 @@ export class Game {
                 segments: [],
                 fieldPartitions,
                 dead: true,
-                deathTime: 0,
-                recentlyAddedSegments: [],
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
@@ -281,16 +240,6 @@ export class Game {
             return;
         }
 
-        if (player.pendingDirectionInputs.length > 0) {
-            const lastInput = player.pendingDirectionInputs[player.pendingDirectionInputs.length - 1];
-            if (direction === lastInput.direction || direction === oppositeDirection(lastInput.direction)) {
-                return;
-            }
-        } else {
-            if (direction === player.direction || direction === oppositeDirection(player.direction)) {
-                return;
-            }
-        }
         player.pendingDirectionInputs.push({
             direction,
             receivedTimestamp: Date.now()
@@ -306,84 +255,6 @@ export class Game {
             player.lastSentSegmentIndices.set(playerId, 0);
         }
         player.pendingRedraw = true;
-    }
-
-    private checkNewSegmentCollision(player: Player, index: number, oldEndPoint: Point, duration: number, startTime: number) {
-        const newPoint = player.segments[index][1];
-        const checkedSegment = [ oldEndPoint, newPoint ] as Segment;
-
-        if (newPoint[0] < -this.settings.aspectRatio || newPoint[0] > this.settings.aspectRatio || newPoint[1] < -1.0 || newPoint[1] > 1.0) {
-            // technically don't have to adjust point since it's not in the canvas anyways
-            player.dead = true;
-
-            const deathPoint = [
-                Math.min(Math.max(newPoint[0], -this.settings.aspectRatio), this.settings.aspectRatio),
-                Math.min(Math.max(newPoint[1], -1.0), 1.0)
-            ] as Point;
-            player.deathTime = linterpTimeFromSegment(checkedSegment, deathPoint, duration, startTime);
-            return;
-        }
-
-        const traversedPartitions = this.segmentToPartitions([ oldEndPoint, newPoint ]);
-        for (const partition of traversedPartitions) {
-            if (partition < 0 || partition >= player.fieldPartitions.length) {
-                continue;
-            }
-            for (const player2 of this.players.values()) {
-                for (const segmentIndex of player2.fieldPartitions[partition]) {
-                    if (player.id === player2.id && Math.abs(index - segmentIndex) < 2) {
-                        continue;
-                    }
-
-                    let consideredSegment = structuredClone(player2.segments[segmentIndex]);
-                    let recentlyAddedSegment: RecentlyAddedSegment | null = null;
-                    if (segmentIndex >= player2.segments.length - player2.recentlyAddedSegments.length) {
-                        const recentlyAddedIndex = segmentIndex - (player2.segments.length - player2.recentlyAddedSegments.length);
-                        recentlyAddedSegment = player2.recentlyAddedSegments[recentlyAddedIndex];
-                        if (recentlyAddedSegment.startTime > startTime + duration) {
-                            continue;
-                        } else if (recentlyAddedSegment.startTime + recentlyAddedSegment.duration >= startTime) {
-                            const timeElapsed = startTime + duration - recentlyAddedSegment.startTime;
-                            consideredSegment[1] = linterpSegmentFromTime([ recentlyAddedSegment.startPoint, consideredSegment[1] ], timeElapsed, recentlyAddedSegment.duration);
-                        }
-                    }
-
-                    const [collisionStart, collisionEnd] = this.lineToLineCollision(checkedSegment, consideredSegment);
-                    if (collisionStart && collisionEnd) {
-                        const deathTime = linterpTimeFromSegment(checkedSegment, collisionStart!, duration, startTime);
-                        if (recentlyAddedSegment) {
-                            const exitTime = linterpTimeFromSegment(checkedSegment, collisionEnd!, duration, startTime);
-                            const consideredSegmentAtExit = linterpSegmentFromTime([recentlyAddedSegment.startPoint, consideredSegment[1]], exitTime - recentlyAddedSegment.startTime, startTime + duration - recentlyAddedSegment.startTime);
-                            const [exitCollisionStart, exitCollisionEnd] = this.lineToLineCollision(checkedSegment, [consideredSegment[0], consideredSegmentAtExit]);
-                            if (!exitCollisionStart && !exitCollisionEnd) {
-                                continue;
-                            }
-                            const [otherCollisionStart, otherCollisionEnd] = this.lineToLineCollision(consideredSegment, checkedSegment);
-                            if (otherCollisionStart && otherCollisionEnd) {
-                                const otherDeathTime = linterpTimeFromSegment([recentlyAddedSegment.startPoint, consideredSegment[1]], otherCollisionStart, recentlyAddedSegment.duration, recentlyAddedSegment.startTime);
-                                if (otherDeathTime > deathTime) {
-                                    continue;
-                                }
-                            }
-                        }
-                        player.dead = true;
-                        player.deathTime = Math.min(player.deathTime, deathTime);
-                        if (player.id != player2.id && player.deathTime === player2.deathTime) {
-                            const newDeathTime = this.adjustDeathTimeForHeadOn(checkedSegment, consideredSegment, player.deathTime);
-                            player.deathTime = newDeathTime;
-                            player2.deathTime = newDeathTime;
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private checkNewCollisions(player: Player) {
-        for (const newSegment of player.recentlyAddedSegments) {
-            this.checkNewSegmentCollision(player, newSegment.index, newSegment.startPoint, newSegment.duration, newSegment.startTime);
-        }
     }
 
     private addSegment(player: Player, direction: Direction) {
@@ -423,7 +294,7 @@ export class Game {
         player.segments.push([ newPoint, structuredClone(newPoint) ] as Segment);
     }
 
-    private extendLastSegment(player: Player, duration: number, startTime: number) {
+    private extendLastSegment(player: Player, duration: number) {
         if (player.dead) {
             return;
         }
@@ -435,47 +306,31 @@ export class Game {
         lastSegment[1][0] += direction[0] * spatialLength;
         lastSegment[1][1] += direction[1] * spatialLength;
 
-        const newPartitions = this.segmentToPartitions([ oldSegmentEnd, lastSegment[1] ]);
-        for (const partition of newPartitions) {
-            // necessary because we only check bounds of field when checking for collisions
-            // and we are processing movement for the whole tick before checking collisions
-            if (partition >= 0 && partition < player.fieldPartitions.length) {
-                player.fieldPartitions[partition].add(player.segments.length - 1);
-            }
-        }
-
-        player.recentlyAddedSegments.push({
-            startPoint: oldSegmentEnd,
-            index: player.segments.length - 1,
-            duration,
-            startTime
-        });
-    }
-
-    private addSegmentWithDuration(player: Player, direction: Direction, duration: number, startTime: number) {
-        this.addSegment(player, direction);
-        this.extendLastSegment(player, duration, startTime);
-    }
-
-    private processPendingInputs(player: Player) {
-        if (player.pendingDirectionInputs.length === 0) {
+        if (lastSegment[1][0] < -this.settings.aspectRatio || lastSegment[1][0] > this.settings.aspectRatio || lastSegment[1][1] < -1.0 || lastSegment[1][1] > 1.0) {
+            player.dead = true;
             return;
         }
 
-        const deltaFromTickStartMs = player.pendingDirectionInputs[0].receivedTimestamp - this.lastTickEndTimestamp;
-        this.extendLastSegment(player, deltaFromTickStartMs, this.lastTickEndTimestamp);
+        const newPartitions = this.segmentToPartitions([ oldSegmentEnd, lastSegment[1] ]);
+        for (const partition of newPartitions) {
+            player.fieldPartitions[partition].add(player.segments.length - 1);
+            for (const player2 of this.players.values()) {
+                for (const segmentIndex of player2.fieldPartitions[partition]) {
+                    // disallow collisions with our turn immediately after segment
+                    if (player.id === player2.id && (player.segments.length - 1) - segmentIndex < 2) {
+                        continue;
+                    }
 
-        let totalTime = deltaFromTickStartMs;
-        for (let i = 0; i < player.pendingDirectionInputs.length - 1; i++) {
-            const deltams = player.pendingDirectionInputs[i + 1].receivedTimestamp - player.pendingDirectionInputs[i].receivedTimestamp;
-            this.addSegmentWithDuration(player, player.pendingDirectionInputs[i].direction, deltams, this.lastTickEndTimestamp + totalTime);
-            totalTime += deltams;
+                    const consideredSegment = [ oldSegmentEnd, lastSegment[1] ] as Segment;
+                    const [collisionStart, collisionEnd] = this.lineToLineCollision(consideredSegment, player2.segments[segmentIndex]);
+                    if (collisionStart && collisionEnd) {
+                        player.dead = true;
+                        lastSegment[1] = collisionStart;
+                        break;
+                    }
+                }
+            }
         }
-        const tickTime = 1000 / this.tickRate;
-        const remainingTimeMs = tickTime - (player.pendingDirectionInputs[player.pendingDirectionInputs.length - 1].receivedTimestamp - this.lastTickEndTimestamp);
-        this.addSegmentWithDuration(player, player.pendingDirectionInputs[player.pendingDirectionInputs.length - 1].direction, remainingTimeMs, this.lastTickEndTimestamp + totalTime);
-
-        player.pendingDirectionInputs = [];
     }
 
     private sendGameState(player: Player) {
@@ -497,22 +352,27 @@ export class Game {
         }
     }
 
-    private correctPlayerPosition(player: Player, deathTime: number) {
-        // could use a kd-tree but linear search isn't too bad considering there won't be tons of inputs per tick
-        for (const segment of player.recentlyAddedSegments) {
-            if (deathTime >= segment.startTime && deathTime < segment.startTime + segment.duration) {
-                const timeRemaining = deathTime - segment.startTime;
-                const timeRatio = timeRemaining / segment.duration;
-                let [x1, y1] = segment.startPoint;
-                let [x2, y2] = player.segments[segment.index][1];
-
-                const x = x1 + (x2 - x1) * timeRatio;
-                const y = y1 + (y2 - y1) * timeRatio;
-                player.segments[segment.index][1] = [ x, y ];
-                player.segments = player.segments.slice(0, segment.index + 1);
-                return;
+    private processSubTick(subTickIndex: number) {
+        const alive: string[] = [];
+        for (const player of this.players.values()) {
+            if (!player.dead) {
+                alive.push(player.id);
+                const beginCutoff = this.lastTickEndTimestamp + subTickIndex * (1000 / (this.tickRate * this.subTickRate));
+                const endCutoff = beginCutoff + (1000 / (this.tickRate * this.subTickRate));
+                const lastInputBeforeCutoff = player.pendingDirectionInputs.findIndex(input =>
+                    input.receivedTimestamp >= beginCutoff
+                    && input.receivedTimestamp < endCutoff
+                    && input.direction !== oppositeDirection(player.direction)
+                    && input.direction !== player.direction
+                );
+                if (lastInputBeforeCutoff !== -1) {
+                    this.addSegment(player, player.pendingDirectionInputs[lastInputBeforeCutoff].direction);
+                    player.pendingDirectionInputs = player.pendingDirectionInputs.slice(lastInputBeforeCutoff + 1);
+                }
+                this.extendLastSegment(player, 1000 / (this.tickRate * this.subTickRate));
             }
         }
+        return alive;
     }
 
     gameLoop() {
@@ -528,62 +388,32 @@ export class Game {
             return;
         }
 
-        const alive: string[] = [];
-        for (const player of this.players.values()) {
-            player.pendingRedraw = false;
-            player.recentlyAddedSegments = [];
+        for (let i = 0; i < this.subTickRate; i++) {
+            const alive = this.processSubTick(i);
+            if (alive.length <= 1) {
+                this.playing = false;
 
-            if (!player.dead) {
-                if (player.pendingDirectionInputs.length > 0) {
-                    this.processPendingInputs(player);
-                } else {
-                    this.extendLastSegment(player, 1000 / this.tickRate, this.lastTickEndTimestamp);
+                const winners = alive.length === 1 ? alive : this.prevAlive;
+                for (const id of winners) {
+                    const player = this.players.get(id)!;
+                    player.score++;
+                    this.server.emit("modify_player", {
+                        id,
+                        name: player.name,
+                        color: player.color,
+                        score: player.score
+                    } as PlayerInfo);
                 }
+                this.prevAlive = alive;
+                break;
             }
-        }
-
-        for (const player of this.players.values()) {
-            if (!player.dead) {
-                this.checkNewCollisions(player);
-                if (!player.dead) {
-                    alive.push(player.id);
-                }
-            }
-        }
-
-        if (alive.length <= 1) {
-            this.playing = false;
-
-            const playersSortedByDeathTime = Array.from(this.players.values())
-                .sort((a, b) => a.deathTime - b.deathTime);
-
-            const endTime = playersSortedByDeathTime[this.players.size - 2].deathTime;
-
-            for (const player of this.players.values()) {
-                this.correctPlayerPosition(player, endTime);
-            }
-
-            const winners = playersSortedByDeathTime[this.players.size - 1].deathTime === endTime
-                ? playersSortedByDeathTime.filter(player => player.deathTime === endTime).map(player => player.id)
-                : [playersSortedByDeathTime[this.players.size - 1].id];                
-
-            for (const id of winners) {
-                const player = this.players.get(id)!;
-                player.score++;
-                this.server.emit("modify_player", {
-                    id,
-                    name: player.name,
-                    color: player.color,
-                    score: player.score
-                } as PlayerInfo);
-            }
+            this.prevAlive = alive;
         }
 
         for (const player of this.players.values()) {
             this.sendGameState(player);
         }
 
-        this.prevAlive = alive;
         this.lastTickEndTimestamp = Date.now();
     }
 }
