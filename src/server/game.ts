@@ -334,22 +334,20 @@ export class Game {
     }
 
     private sendGameState(player: Player) {
-        for (const player2 of this.players.values()) {
+        const playerState = Array.from(this.players.values()).map(player2 => {
             const lastSentSegmentIndex = player.lastSentSegmentIndices.get(player2.id)!;
-            player.socket.emit("game_state", {
-                players: [
-                    {
-                        id: player2.id,
-                        missingSegments: player2.segments.slice(lastSentSegmentIndex),
-                    } as PlayerState
-                ],
-                timestamp: this.currentTickTimestamp
-            } as GameState);
-
             if (lastSentSegmentIndex < player2.segments.length - 1) {
                 player.lastSentSegmentIndices.set(player2.id, player2.segments.length - 1);
             }
-        }
+            return {
+                id: player2.id,
+                missingSegments: player2.segments.slice(lastSentSegmentIndex),
+            } as PlayerState
+        });
+        player.socket.emit("game_state", {
+            players: playerState,
+            timestamp: this.currentTickTimestamp
+        } as GameState);
     }
 
     private processSubTick(subTickIndex: number) {
@@ -411,6 +409,7 @@ export class Game {
         }
 
         for (const player of this.players.values()) {
+            player.pendingRedraw = false;
             this.sendGameState(player);
         }
 

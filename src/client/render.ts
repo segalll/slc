@@ -124,8 +124,9 @@ export class Renderer {
         const newWidth = window.innerWidth - 4;
         const newHeight = window.innerHeight - document.getElementById("names")!.clientHeight - 8;
 
-        if (Math.abs((this.gl.canvas.width / this.gl.canvas.height) - this.aspectRatio) < 0.002 &&
-            (this.gl.canvas.width === newWidth || this.gl.canvas.height === newHeight) && this.gl.canvas.width <= newWidth && this.gl.canvas.height <= newHeight) {
+        if (Math.abs((this.gl.canvas.width / this.gl.canvas.height) - this.aspectRatio) < 0.002
+            && (this.gl.canvas.width === newWidth || this.gl.canvas.height === newHeight)
+            && this.gl.canvas.width <= newWidth && this.gl.canvas.height <= newHeight) {
             return;
         }
 

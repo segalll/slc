@@ -1,5 +1,5 @@
 import { Socket } from "socket.io-client";
-import { Direction, DirectionInput, oppositeDirection } from "../shared/model";
+import { Direction, oppositeDirection } from "../shared/model";
 
 export class InputManager {
     socket: Socket;
