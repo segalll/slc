@@ -67,9 +67,7 @@ io.on("connection", (socket: Socket) => {
         console.log(`Join | ID: ${session.userID}`);
         socket.emit("game_settings", {
             aspectRatio: game.aspectRatio,
-            lineWidth: game.lineWidth,
-            tickRate: game.tickRate,
-            moveSpeed: game.moveSpeed
+            lineWidth: game.lineWidth
         } as GameSettings);
         game.addPlayer(socket, session.userID, session.username, session.color);
     })

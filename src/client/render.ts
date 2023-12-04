@@ -1,5 +1,5 @@
 import { Socket } from "socket.io-client";
-import { GameSettings, PlayerInfo, PlayerState, Point, Segment } from "../shared/model";
+import { GameSettings, PlayerInfo, PlayerState } from "../shared/model";
 
 interface Player {
     vao: WebGLVertexArrayObject;
@@ -8,9 +8,6 @@ interface Player {
     color: [number, number, number];
     score: number;
     segmentCount: number;
-    lastReceivedSegments: Segment[];
-    lastReceivedTimestamp: number;
-    currentDuration: number;
 }
 
 const ortho = (left: number, right: number, bottom: number, top: number, near: number, far: number) => {
@@ -25,11 +22,6 @@ const ortho = (left: number, right: number, bottom: number, top: number, near: n
     ];
 }
 
-const segmentLength = (segment: Segment) => {
-    const [p1, p2] = segment;
-    return p1[0] === p2[0] ? Math.abs(p2[1] - p1[1]) : Math.abs(p2[0] - p1[0]);
-}
-
 export class Renderer {
     socket: Socket;
     gl: WebGL2RenderingContext;
@@ -40,8 +32,6 @@ export class Renderer {
 
     aspectRatio: number;
     lineWidth: number = 0.002; // default value
-    serverTickRate: number = 5; // default value
-    serverMoveSpeed: number = 0.3; // default value
 
     pendingRedraw: boolean;
 
@@ -124,8 +114,6 @@ export class Renderer {
     updateGameSettings(gameSettings: GameSettings) {
         this.updateAspectRatio(gameSettings.aspectRatio);
         this.lineWidth = gameSettings.lineWidth;
-        this.serverTickRate = gameSettings.tickRate;
-        this.serverMoveSpeed = gameSettings.moveSpeed;
     }
 
     removePlayer(id: string) {
@@ -197,10 +185,7 @@ export class Renderer {
                 name: playerInfo.name,
                 color: playerInfo.color,
                 score: playerInfo.score,
-                segmentCount: 0,
-                lastReceivedSegments: [],
-                lastReceivedTimestamp: 0,
-                currentDuration: 0
+                segmentCount: 0
             });
 
             const nameElement = document.createElement("pre");
@@ -211,55 +196,15 @@ export class Renderer {
         }
     }
 
-    private interpolatePlayerState(player: Player) {
-        const segments: Segment[] = [];
-        const t = Date.now() - player.lastReceivedTimestamp;
-
-        let currentDuration = 0;
-
-        for (let i = 0; i < player.lastReceivedSegments.length; i++) {
-            const length = segmentLength(player.lastReceivedSegments[i]);
-            const duration = length / this.serverMoveSpeed * 1000;
-            if (currentDuration + duration < player.currentDuration) {
-                currentDuration += duration;
-                continue;
-            }
-            if (currentDuration < player.currentDuration) {
-                const partialLength = (player.currentDuration - currentDuration) / duration * length;
-                const [p1, p2] = player.lastReceivedSegments[i];
-                const unitDirection = [(p2[0] - p1[0]) / length, (p2[1] - p1[1]) / length];
-                const partialP1: Point = [p1[0] + unitDirection[0] * partialLength, p1[1] + unitDirection[1] * partialLength];
-                segments.push([partialP1, p2]);
-                currentDuration += partialLength / this.serverMoveSpeed * 1000;
-                continue;
-            }
-            if (currentDuration + duration < t) {
-                currentDuration += duration;
-                segments.push(player.lastReceivedSegments[i]);
-                continue;
-            }
-
-            const partialLength = (t - currentDuration) / duration * length;
-            const [p1, p2] = player.lastReceivedSegments[i];
-            const unitDirection = [(p2[0] - p1[0]) / length, (p2[1] - p1[1]) / length];
-            const partialP2: Point = [p1[0] + unitDirection[0] * partialLength, p1[1] + unitDirection[1] * partialLength];
-            segments.push([p1, partialP2]);
-            break;
-        }
-        player.currentDuration = t;
-
-        return segments;
-    }
-
-    loadInterpolatedState(player: Player) {
-        const segments = this.interpolatePlayerState(player);
+    updatePlayer(playerState: PlayerState) {
+        const player = this.players.get(playerState.id)!;
 
         this.gl.bindVertexArray(player.vao);
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        const data = new Float32Array(12 * segments.length);
-        for (let i = 0; i < segments.length; i++) {
-            const p1 = segments[i][0];
-            const p2 = segments[i][1];
+        const data = new Float32Array(12 * playerState.missingSegments.length);
+        for (let i = 0; i < playerState.missingSegments.length; i++) {
+            const p1 = playerState.missingSegments[i][0];
+            const p2 = playerState.missingSegments[i][1];
             if (p1[0] === p2[0]) {
                 data.set([
                     p1[0] - this.lineWidth, p1[1],
@@ -282,15 +227,7 @@ export class Renderer {
         }
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 12 * 4 * player.segmentCount, data);
 
-        player.segmentCount += segments.length;
-    }
-
-    updatePlayer(playerState: PlayerState, timestamp: number) {
-        const player = this.players.get(playerState.id)!;
-
-        player.lastReceivedSegments = playerState.missingSegments;
-        player.lastReceivedTimestamp = timestamp;
-        player.currentDuration = 0;
+        player.segmentCount += playerState.missingSegments.length;
     }
     
     renderLoop() {
@@ -304,7 +241,9 @@ export class Renderer {
 
         this.gl.useProgram(this.playerProgram);
         for (const player of this.players.values()) {
-            this.loadInterpolatedState(player);
+            if (player.segmentCount === 0) {
+                continue;
+            }
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
             this.gl.uniform3fv(this.gl.getUniformLocation(this.playerProgram, "uColor"), player.color);

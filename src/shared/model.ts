@@ -4,7 +4,6 @@ export type Segment = [Point, Point];
 
 export interface GameState {
     players: PlayerState[];
-    timestamp: number;
 }
 
 export interface PlayerState {
@@ -62,6 +61,4 @@ export const directionToVector = (direction: Direction) => {
 export interface GameSettings {
     aspectRatio: number;
     lineWidth: number;
-    tickRate: number;
-    moveSpeed: number;
 }

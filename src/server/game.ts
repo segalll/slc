@@ -40,7 +40,6 @@ export class Game {
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
     lastTickEndTimestamp: number;
-    currentTickTimestamp: number = 0;
 
     constructor(server: Server) {
         this.server = server;
@@ -214,8 +213,7 @@ export class Game {
                         id: player.id,
                         missingSegments: player.segments
                     } as PlayerState
-                ],
-                timestamp: Date.now()
+                ]
             } as GameState);
             this.players.get(id)!.lastSentSegmentIndices.set(player.id, player.segments.length - 1);
         }
@@ -344,8 +342,7 @@ export class Game {
             } as PlayerState
         });
         player.socket.emit("game_state", {
-            players: playerState,
-            timestamp: this.currentTickTimestamp
+            players: playerState
         } as GameState);
     }
 
@@ -373,8 +370,6 @@ export class Game {
     }
 
     gameLoop() {
-        this.currentTickTimestamp = Date.now();
-
         if (!this.playing) {
             for (const player of this.players.values()) {
                 if (player.pendingRedraw) {
