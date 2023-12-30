@@ -32,8 +32,8 @@ export class Game {
 
     numPartitions: number = 10; // number of partitions per axis
     moveSpeed: number = 0.3;
-    tickRate: number = 25;
-    subTickRate: number = 4;
+    tickRate: number = 10;
+    subTickRate: number = 10;
     aspectRatio: number = 1.5;
     lineWidth: number = 0.002;
     minSpawnDistanceFromEdge: number = 0.1;
@@ -47,14 +47,6 @@ export class Game {
         this.players = new Map<string, Player>();
         this.lastTickEndTimestamp = Date.now();
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
-    }
-
-    private pointToPartition(point: Point): number {
-        const partitionSizeX = 2 * this.aspectRatio / this.numPartitions;
-        const partitionSizeY = 2.0 / this.numPartitions;
-        const x = Math.floor((point[0] + this.aspectRatio) / partitionSizeX);
-        const y = Math.floor((point[1] + 1.0) / partitionSizeY);
-        return y * this.numPartitions + x;
     }
 
     private segmentToPartitions(segment: Segment): number[] {
