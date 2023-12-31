@@ -41,11 +41,13 @@ export class Game {
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
     lastTickEndTimestamp: number;
+    currentTickStartTimestamp: number;
 
     constructor(server: Server) {
         this.server = server;
         this.players = new Map<string, Player>();
         this.lastTickEndTimestamp = Date.now();
+        this.currentTickStartTimestamp = Date.now();
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
     }
 
@@ -152,6 +154,7 @@ export class Game {
                 player.lastSentSegmentIndices.set(id, 0);
             }
         }
+
         this.server.emit("starting");
 
         this.prevAlive = Array.from(this.players.keys());
@@ -165,6 +168,7 @@ export class Game {
                     player.segments = [[ startPoint, endPoint ] as Segment];
                 }
             }
+            this.lastTickEndTimestamp = Date.now();
             this.playing = true;
         }, 3000);
     }
@@ -223,7 +227,8 @@ export class Game {
                         id: player.id,
                         missingSegments: player.segments
                     } as PlayerState
-                ]
+                ],
+                timestamp: this.currentTickStartTimestamp
             } as GameState);
             this.players.get(id)!.lastSentSegmentIndices.set(player.id, player.segments.length - 1);
         }
@@ -353,10 +358,12 @@ export class Game {
             return {
                 id: player2.id,
                 missingSegments: player2.segments.slice(lastSentSegmentIndex),
+                interpolated: !player2.dead && this.playing
             } as PlayerState
         });
         player.socket.emit("game_state", {
-            players: playerState
+            players: playerState,
+            timestamp: this.currentTickStartTimestamp
         } as GameState);
     }
 
@@ -384,6 +391,8 @@ export class Game {
     }
 
     gameLoop() {
+        this.currentTickStartTimestamp = Date.now();
+
         if (!this.playing) {
             for (const player of this.players.values()) {
                 if (player.pendingRedraw) {

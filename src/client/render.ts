@@ -1,5 +1,10 @@
 import { Socket } from "socket.io-client";
-import { GameSettings, PlayerInfo, PlayerState } from "../shared/model";
+import { GameSettings, PlayerInfo, PlayerState, Point, Segment, segmentsEqual } from "../shared/model";
+
+interface PlayerStateWithTimestamp {
+    state: PlayerState;
+    timestamp: number;
+}
 
 interface Player {
     vao: WebGLVertexArrayObject;
@@ -8,6 +13,8 @@ interface Player {
     color: [number, number, number];
     score: number;
     segmentCount: number;
+    stateBuffer: PlayerStateWithTimestamp[];
+    interpolationTime: number;
 }
 
 const ortho = (left: number, right: number, bottom: number, top: number, near: number, far: number) => {
@@ -22,6 +29,11 @@ const ortho = (left: number, right: number, bottom: number, top: number, near: n
     ];
 }
 
+const segmentLength = (segment: Segment) => {
+    const [p1, p2] = segment;
+    return p1[0] === p2[0] ? Math.abs(p2[1] - p1[1]) : Math.abs(p2[0] - p1[0]);
+}
+
 export class Renderer {
     socket: Socket;
     gl: WebGL2RenderingContext;
@@ -32,10 +44,14 @@ export class Renderer {
 
     aspectRatio: number;
     lineWidth: number = 0.002; // default value
+    serverTickRate: number = 10; // default value
+    serverMoveSpeed: number = 0.3; // default value
 
     pendingRedraw: boolean;
 
     namesElement: HTMLElement;
+
+    lastTimestamp: number = 0;
 
     constructor(socket: Socket, aspectRatio: number) {
         const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -156,6 +172,9 @@ export class Renderer {
 
     prepareRound() {
         this.pendingRedraw = true;
+        for (const player of this.players.values()) {
+            player.stateBuffer = [];
+        }
     }
 
     modifyPlayer(playerInfo: PlayerInfo) {
@@ -185,7 +204,9 @@ export class Renderer {
                 name: playerInfo.name,
                 color: playerInfo.color,
                 score: playerInfo.score,
-                segmentCount: 0
+                segmentCount: 0,
+                stateBuffer: [],
+                interpolationTime: 0
             });
 
             const nameElement = document.createElement("pre");
@@ -196,15 +217,102 @@ export class Renderer {
         }
     }
 
-    updatePlayer(playerState: PlayerState) {
+    updatePlayer(playerState: PlayerState, timestamp: number) {
         const player = this.players.get(playerState.id)!;
 
+        if (!playerState.interpolated) {
+            this.loadPlayerSegments(player, playerState.missingSegments);
+            return;
+        }
+
+        // start interpolation for 1 tick buffer
+        if (player.stateBuffer.length === 1) {
+            player.interpolationTime = player.stateBuffer[0].timestamp;
+        }
+
+        if (playerState.missingSegments.length === 0) {
+            return;
+        }
+
+        player.stateBuffer.push({
+            state: playerState,
+            timestamp
+        } as PlayerStateWithTimestamp);
+    }
+
+    private interpolatePlayerState(player: Player, delta: number) {
+        const segments: Segment[] = [];
+
+        if (player.stateBuffer.length < 2) {
+            return segments;
+        }
+
+        for (let i = 0; i < player.stateBuffer.length - 1; i++) {
+            const state = player.stateBuffer[i];
+            const state2 = player.stateBuffer[i + 1];
+
+            // remove overlap on first segment
+            if (segmentsEqual(state.state.missingSegments[0], state2.state.missingSegments[0])) {
+                state2.state.missingSegments[0][0] = state.state.missingSegments[0][1];
+            }
+
+            const t = player.interpolationTime - state.timestamp;
+            if (t <= 0) {
+                break;
+            }
+            let currentDuration = 0;
+            for (let i = 0; i < state2.state.missingSegments.length; i++) {
+                const length = segmentLength(state2.state.missingSegments[i]);
+                const duration = length / this.serverMoveSpeed * 1000;
+                // ends before current time
+                if (currentDuration + duration < t) {
+                    currentDuration += duration;
+                    continue;
+                }
+
+                // starts before current time, ends after current time, partial segment
+                if (currentDuration < t) {
+                    const partialLength = (t - currentDuration) / duration * length;
+                    const [p1, p2] = state2.state.missingSegments[i];
+                    const unitDir = [(p2[0] - p1[0]) / length, (p2[1] - p1[1]) / length];
+                    const partialP1: Point = [p1[0] + unitDir[0] * partialLength, p1[1] + unitDir[1] * partialLength];
+                    segments.push([partialP1, p2]);
+                    currentDuration += partialLength / this.serverMoveSpeed * 1000;
+                    continue;
+                }
+
+                // ends before new time, full segment
+                if (currentDuration + duration < t + delta) {
+                    segments.push(state2.state.missingSegments[i]);
+                    currentDuration += duration;
+                    continue;
+                }
+
+                // ends after new time, partial segment
+                const partialLength = (t + delta - currentDuration) / duration * length;
+                const [p1, p2] = state2.state.missingSegments[i];
+                const unitDir = [(p2[0] - p1[0]) / length, (p2[1] - p1[1]) / length];
+                const partialP2: Point = [p1[0] + unitDir[0] * partialLength, p1[1] + unitDir[1] * partialLength];
+                segments.push([p1, partialP2]);
+                break;
+            }
+        }
+
+        player.interpolationTime += delta;
+        if (player.interpolationTime >= player.stateBuffer[1].timestamp) {
+            player.stateBuffer.shift();
+        }
+
+        return segments;
+    }
+
+    private loadPlayerSegments(player: Player, segments: Segment[]) {
         this.gl.bindVertexArray(player.vao);
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        const data = new Float32Array(12 * playerState.missingSegments.length);
-        for (let i = 0; i < playerState.missingSegments.length; i++) {
-            const p1 = playerState.missingSegments[i][0];
-            const p2 = playerState.missingSegments[i][1];
+        const data = new Float32Array(12 * segments.length);
+        for (let i = 0; i < segments.length; i++) {
+            const p1 = segments[i][0];
+            const p2 = segments[i][1];
             if (p1[0] === p2[0]) {
                 data.set([
                     p1[0] - this.lineWidth, p1[1],
@@ -227,11 +335,14 @@ export class Renderer {
         }
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 12 * 4 * player.segmentCount, data);
 
-        player.segmentCount += playerState.missingSegments.length;
+        player.segmentCount += segments.length;
     }
     
     renderLoop() {
         this.resize();
+
+        const now = performance.now();
+        const delta = this.lastTimestamp === 0 ? 0 : now - this.lastTimestamp;
 
         if (this.pendingRedraw) {
             this.pendingRedraw = false;
@@ -241,6 +352,10 @@ export class Renderer {
 
         this.gl.useProgram(this.playerProgram);
         for (const player of this.players.values()) {
+            const segments = this.interpolatePlayerState(player, delta);
+            if (segments.length > 0) {
+                this.loadPlayerSegments(player, segments);
+            }
             if (player.segmentCount === 0) {
                 continue;
             }
@@ -250,6 +365,8 @@ export class Renderer {
             this.gl.drawArrays(this.gl.TRIANGLES, 0, 6 * player.segmentCount);
             player.segmentCount = 0;
         }
+
+        this.lastTimestamp = now;
 
         requestAnimationFrame(() => this.renderLoop());
     }
