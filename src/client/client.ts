@@ -98,7 +98,7 @@ socket.on("connect_error", err => {
 
 socket.on("game_state", (gameState: GameState) => {
     for (const player of gameState.players) {
-        renderer.updatePlayer(player, gameState.timestamp);
+        renderer.updatePlayer(player);
     }
 })
 

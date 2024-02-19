@@ -2,19 +2,13 @@ export type Point = [x: number, y: number];
 
 export type Segment = [Point, Point];
 
-export const segmentsEqual = (a: Segment, b: Segment) => {
-    return a[0][0] === b[0][0] && a[0][1] === b[0][1] && a[1][0] === b[1][0] && a[1][1] === b[1][1];
-}
-
 export interface GameState {
     players: PlayerState[];
-    timestamp: number;
 }
 
 export interface PlayerState {
     id: string;
     missingSegments: Segment[];
-    interpolated: boolean;
 }
 
 export interface PlayerInfo {
