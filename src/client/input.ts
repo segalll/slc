@@ -1,60 +1,60 @@
 import { Socket } from "socket.io-client";
 import { Direction } from "../shared/model";
 
-export class InputManager {
-    socket: Socket;
-    keyMap: Map<string, Direction>;
+interface TouchState {
     startX: number;
     startY: number;
+}
+
+export class InputManager {
+    private readonly socket: Socket;
+    private readonly keyMap: Map<string, Direction>;
+    private readonly touchState: TouchState;
 
     constructor(socket: Socket) {
         this.socket = socket;
-        this.keyMap = new Map<string, Direction>();
-        this.keyMap.set("ArrowLeft", Direction.Left);
-        this.keyMap.set("ArrowRight", Direction.Right);
-        this.keyMap.set("ArrowUp", Direction.Up);
-        this.keyMap.set("ArrowDown", Direction.Down);
+        this.keyMap = new Map<string, Direction>([
+            ["ArrowLeft", Direction.Left],
+            ["ArrowRight", Direction.Right],
+            ["ArrowUp", Direction.Up],
+            ["ArrowDown", Direction.Down]
+        ]);
+        this.touchState = { startX: 0, startY: 0 };
     }
 
-    private onTouchStart(e: TouchEvent) {
-        this.startX = e.touches[0].clientX;
-        this.startY = e.touches[0].clientY;
-    }
+    private onTouchStart = (e: TouchEvent): void => {
+        this.touchState.startX = e.touches[0].clientX;
+        this.touchState.startY = e.touches[0].clientY;
+    };
 
-    private onTouchEnd(e: TouchEvent) {
+    private onTouchEnd = (e: TouchEvent): void => {
         const endX = e.changedTouches[0].clientX;
         const endY = e.changedTouches[0].clientY;
-        const dx = endX - this.startX;
-        const dy = endY - this.startY;
-        if (Math.abs(dx) > Math.abs(dy)) {
-            if (dx > 0) {
-                this.socket.emit("input", Direction.Right);
-            } else {
-                this.socket.emit("input", Direction.Left);
-            }
-        } else {
-            if (dy > 0) {
-                this.socket.emit("input", Direction.Down);
-            } else {
-                this.socket.emit("input", Direction.Up);
-            }
-        }
-    }
+        const dx = endX - this.touchState.startX;
+        const dy = endY - this.touchState.startY;
+        
+        const direction = Math.abs(dx) > Math.abs(dy) 
+            ? (dx > 0 ? Direction.Right : Direction.Left)
+            : (dy > 0 ? Direction.Down : Direction.Up);
+            
+        this.socket.emit("input", direction);
+    };
     
-    private onKeyDown(e: KeyboardEvent) {
+    private onKeyDown = (e: KeyboardEvent): void => {
         if (e.key === "Enter") {
             this.socket.emit("start");
+            return;
         }
 
-        if (this.keyMap.has(e.key)) {
-            const direction = this.keyMap.get(e.key)!;
+        const direction = this.keyMap.get(e.key);
+        if (direction !== undefined) {
             this.socket.emit("input", direction);
         }
-    }
+    };
 
-    start() {
-        document.addEventListener('keydown', this.onKeyDown.bind(this));
-        document.addEventListener('touchstart', this.onTouchStart.bind(this));
-        document.addEventListener('touchend', this.onTouchEnd.bind(this));
+    start(): void {
+        document.addEventListener('keydown', this.onKeyDown);
+        document.addEventListener('touchstart', this.onTouchStart);
+        document.addEventListener('touchend', this.onTouchEnd);
     }
 }
