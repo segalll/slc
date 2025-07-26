@@ -19,15 +19,15 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@types/express": "^4.17.21",
-    "express": "^4.18.2",
-    "socket.io": "^4.7.2",
-    "socket.io-client": "^4.7.2"
+    "@types/express": "^5.0.3",
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
-    "esbuild": "^0.19.6",
-    "nodemon": "^3.0.1",
+    "esbuild": "^0.25.8",
+    "nodemon": "^3.1.10",
     "npm-run-all": "^4.1.5",
-    "rimraf": "^5.0.5"
+    "rimraf": "^6.0.1"
   }
 }
