@@ -3,7 +3,7 @@ import { Renderer } from "./render";
 import { InputManager } from "./input";
 import { GameSettings, GameState, PlayerInfo } from "../shared/model";
 
-const socket = io("https://slc.segal.sh", { autoConnect: false })
+const socket = io(window.location.toString(), { autoConnect: false })
 
 const hslToRgbHex = (h: number, s: number, l: number) => {
     const c = (1 - Math.abs(2 * l - 1)) * s;
