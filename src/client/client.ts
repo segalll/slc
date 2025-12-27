@@ -1,9 +1,12 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
 import { InputManager } from "./input";
-import { GameSettings, GameState, PlayerInfo } from "../shared/model";
+import { GameSettings, PlayerInfo } from "../shared/model";
 
-const socket = io(window.location.toString(), { autoConnect: false })
+const socket = io(window.location.toString(), {
+    autoConnect: false,
+    transports: ["websocket"]
+});
 
 const hslToRgbHex = (h: number, s: number, l: number) => {
     const c = (1 - Math.abs(2 * l - 1)) * s;
@@ -96,10 +99,8 @@ socket.on("connect_error", err => {
     }
 })
 
-socket.on("game_state", (gameState: GameState) => {
-    for (const player of gameState.players) {
-        renderer.updatePlayer(player);
-    }
+socket.on("game_state", (buffer: ArrayBuffer) => {
+    renderer.updateGameState(buffer);
 })
 
 socket.on("modify_player", (playerInfo: PlayerInfo) => {

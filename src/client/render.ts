@@ -1,7 +1,8 @@
 import { Socket } from "socket.io-client";
-import { GameSettings, PlayerInfo, PlayerState, Point, Segment } from "../shared/model";
+import { GameSettings, PlayerInfo } from "../shared/model";
 
 interface Player {
+    id: string;
     vao: WebGLVertexArrayObject;
     vbo: WebGLBuffer;
     name: string;
@@ -29,6 +30,7 @@ export class Renderer {
     mvpUbo: WebGLBuffer;
 
     players: Map<string, Player>;
+    indexToId: Map<number, string>;
 
     aspectRatio: number;
     lineWidth: number = 0.002; // default value
@@ -90,6 +92,7 @@ export class Renderer {
         this.socket = socket;
         this.gl = gl;
         this.players = new Map<string, Player>();
+        this.indexToId = new Map<number, string>();
 
         this.aspectRatio = aspectRatio;
 
@@ -117,6 +120,12 @@ export class Renderer {
     }
 
     removePlayer(id: string) {
+        for (const [index, playerId] of this.indexToId) {
+            if (playerId === id) {
+                this.indexToId.delete(index);
+                break;
+            }
+        }
         this.players.delete(id);
         this.namesElement.removeChild(document.getElementById(id)!);
         this.pendingRedraw = true;
@@ -159,6 +168,8 @@ export class Renderer {
     }
 
     modifyPlayer(playerInfo: PlayerInfo) {
+        this.indexToId.set(playerInfo.index, playerInfo.id);
+
         if (this.players.has(playerInfo.id)) {
             const player = this.players.get(playerInfo.id)!;
             player.name = playerInfo.name;
@@ -180,6 +191,7 @@ export class Renderer {
             this.gl.vertexAttribPointer(0, 2, this.gl.FLOAT, false, 0, 0);
 
             this.players.set(playerInfo.id, {
+                id: playerInfo.id,
                 vao: vao!,
                 vbo: vbo!,
                 name: playerInfo.name,
@@ -196,38 +208,61 @@ export class Renderer {
         }
     }
 
-    updatePlayer(playerState: PlayerState) {
-        const player = this.players.get(playerState.id)!;
+    updateGameState(buffer: ArrayBuffer) {
+        const view = new DataView(buffer);
+        const numPlayers = view.getUint8(0);
 
-        this.gl.bindVertexArray(player.vao);
-        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        const data = new Float32Array(12 * playerState.missingSegments.length);
-        for (let i = 0; i < playerState.missingSegments.length; i++) {
-            const p1 = playerState.missingSegments[i][0];
-            const p2 = playerState.missingSegments[i][1];
-            if (p1[0] === p2[0]) {
-                data.set([
-                    p1[0] - this.lineWidth, p1[1],
-                    p1[0] + this.lineWidth, p1[1],
-                    p2[0] - this.lineWidth, p2[1],
-                    p2[0] - this.lineWidth, p2[1],
-                    p1[0] + this.lineWidth, p1[1],
-                    p2[0] + this.lineWidth, p2[1]
-                ], 6 * 2 * i);
-            } else {
-                data.set([
-                    p1[0], p1[1] - this.lineWidth,
-                    p1[0], p1[1] + this.lineWidth,
-                    p2[0], p2[1] - this.lineWidth,
-                    p2[0], p2[1] - this.lineWidth,
-                    p1[0], p1[1] + this.lineWidth,
-                    p2[0], p2[1] + this.lineWidth
-                ], 6 * 2 * i);
+        let offset = 1;
+        let floatOffset = 1 + numPlayers * 3;
+
+        for (let p = 0; p < numPlayers; p++) {
+            const playerIndex = view.getUint8(offset);
+            const numSegments = view.getUint16(offset + 1, true);
+            offset += 3;
+
+            const playerId = this.indexToId.get(playerIndex);
+            if (!playerId || !this.players.has(playerId)) {
+                floatOffset += numSegments * 16;
+                continue;
             }
-        }
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 12 * 4 * player.segmentCount, data);
 
-        player.segmentCount += playerState.missingSegments.length;
+            const player = this.players.get(playerId)!;
+
+            this.gl.bindVertexArray(player.vao);
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
+            const data = new Float32Array(12 * numSegments);
+
+            for (let i = 0; i < numSegments; i++) {
+                const p1x = view.getFloat32(floatOffset, true);
+                const p1y = view.getFloat32(floatOffset + 4, true);
+                const p2x = view.getFloat32(floatOffset + 8, true);
+                const p2y = view.getFloat32(floatOffset + 12, true);
+                floatOffset += 16;
+
+                if (p1x === p2x) {
+                    data.set([
+                        p1x - this.lineWidth, p1y,
+                        p1x + this.lineWidth, p1y,
+                        p2x - this.lineWidth, p2y,
+                        p2x - this.lineWidth, p2y,
+                        p1x + this.lineWidth, p1y,
+                        p2x + this.lineWidth, p2y
+                    ], 12 * i);
+                } else {
+                    data.set([
+                        p1x, p1y - this.lineWidth,
+                        p1x, p1y + this.lineWidth,
+                        p2x, p2y - this.lineWidth,
+                        p2x, p2y - this.lineWidth,
+                        p1x, p1y + this.lineWidth,
+                        p2x, p2y + this.lineWidth
+                    ], 12 * i);
+                }
+            }
+
+            this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 12 * 4 * player.segmentCount, data);
+            player.segmentCount += numSegments;
+        }
     }
     
     renderLoop() {

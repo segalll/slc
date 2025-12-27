@@ -13,6 +13,7 @@ export interface PlayerState {
 
 export interface PlayerInfo {
     id: string;
+    index: number;
     name: string;
     color: [number, number, number];
     score: number;

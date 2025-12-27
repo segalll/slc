@@ -1,15 +1,15 @@
 import { Server, Socket } from "socket.io";
-import { directionToVector, Direction, DirectionInput, Point, Segment, GameState, PlayerState, oppositeDirection, PlayerInfo } from "../shared/model";
+import { directionToVector, Direction, Point, Segment, PlayerInfo } from "../shared/model";
 
 interface Player {
     id: string;
+    index: number;
     name: string;
     color: [number, number, number];
     score: number;
 
     startingDirection: Direction | null;
     direction: Direction;
-    pendingDirectionInputs: DirectionInput[];
     segments: Segment[];
     fieldPartitions: Set<number>[]; // each partition is a set of indices into segments
     dead: boolean;
@@ -40,12 +40,11 @@ export class Game {
 
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
-    lastTickEndTimestamp: number;
+    nextPlayerIndex: number = 0;
 
     constructor(server: Server) {
         this.server = server;
         this.players = new Map<string, Player>();
-        this.lastTickEndTimestamp = Date.now();
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
     }
 
@@ -145,7 +144,6 @@ export class Game {
                 player.fieldPartitions[partition].add(0);
             }
 
-            player.pendingDirectionInputs = [];
             player.dead = false;
 
             for (const id of this.players.keys()) {
@@ -166,7 +164,6 @@ export class Game {
                     player.segments = [[ startPoint, endPoint ] as Segment];
                 }
             }
-            this.lastTickEndTimestamp = Date.now();
             this.playing = true;
         }, 3000);
     }
@@ -175,10 +172,12 @@ export class Game {
         if (!this.players.has(id)) {
             const colorVector = colorFromHex(color);
             const score = 0;
+            const index = this.nextPlayerIndex++;
 
             // introduce new player to existing players
             socket.broadcast.emit("modify_player", {
                 id,
+                index,
                 name,
                 color: colorVector,
                 score
@@ -191,13 +190,13 @@ export class Game {
 
             this.players.set(id, {
                 id,
+                index,
                 name,
                 color: colorVector,
                 score,
 
                 startingDirection: null,
                 direction: Direction.Up, // doesn't matter, will be overwritten
-                pendingDirectionInputs: [],
                 segments: [],
                 fieldPartitions,
                 dead: true,
@@ -211,23 +210,15 @@ export class Game {
             this.redraw(id);
         }
 
-        // introduce existing players (including self) to player
         for (const player of this.players.values()) {
             socket.emit("modify_player", {
                 id: player.id,
+                index: player.index,
                 name: player.name,
                 color: player.color,
                 score: player.score
             } as PlayerInfo);
-            socket.emit("game_state", {
-                players: [
-                    {
-                        id: player.id,
-                        missingSegments: player.segments
-                    } as PlayerState
-                ]
-            } as GameState);
-            this.players.get(id)!.lastSentSegmentIndices.set(player.id, player.segments.length - 1);
+            this.sendGameState(this.players.get(id)!, [player]);
         }
     }
 
@@ -253,10 +244,7 @@ export class Game {
             return;
         }
 
-        player.pendingDirectionInputs.push({
-            direction,
-            receivedTimestamp: Date.now()
-        });
+        this.addSegment(player, direction);
     }
 
     redraw(id: string) {
@@ -346,39 +334,53 @@ export class Game {
         }
     }
 
-    private sendGameState(player: Player) {
-        const playerState = Array.from(this.players.values()).map(player2 => {
-            const lastSentSegmentIndex = player.lastSentSegmentIndices.get(player2.id)!;
-            if (lastSentSegmentIndex < player2.segments.length - 1) {
-                player.lastSentSegmentIndices.set(player2.id, player2.segments.length - 1);
+    private sendGameState(receiver: Player, sources?: Player[]) {
+        const playerData: { index: number; segments: Segment[] }[] = [];
+        let totalSegments = 0;
+
+        for (const source of (sources ?? this.players.values())) {
+            const lastSentIndex = receiver.lastSentSegmentIndices.get(source.id) ?? 0;
+            const segments = source.segments.slice(lastSentIndex);
+            if (segments.length > 0) {
+                playerData.push({ index: source.index, segments });
+                totalSegments += segments.length;
+                receiver.lastSentSegmentIndices.set(source.id, source.segments.length - 1);
             }
-            return {
-                id: player2.id,
-                missingSegments: player2.segments.slice(lastSentSegmentIndex)
-            } as PlayerState
-        });
-        player.socket.emit("game_state", {
-            players: playerState
-        } as GameState);
+        }
+
+        if (playerData.length === 0) return;
+
+        const headerSize = 1 + playerData.length * 3;
+        const buffer = new ArrayBuffer(headerSize + totalSegments * 16);
+        const view = new DataView(buffer);
+
+        view.setUint8(0, playerData.length);
+
+        let offset = 1;
+        let floatOffset = headerSize;
+
+        for (const { index, segments } of playerData) {
+            view.setUint8(offset, index);
+            view.setUint16(offset + 1, segments.length, true);
+            offset += 3;
+
+            for (let i = 0; i < segments.length; i++) {
+                view.setFloat32(floatOffset, segments[i][0][0], true);
+                view.setFloat32(floatOffset + 4, segments[i][0][1], true);
+                view.setFloat32(floatOffset + 8, segments[i][1][0], true);
+                view.setFloat32(floatOffset + 12, segments[i][1][1], true);
+                floatOffset += 16;
+            }
+        }
+
+        receiver.socket.volatile.emit("game_state", buffer);
     }
 
-    private processSubTick(subTickIndex: number) {
+    private processSubTick() {
         const alive: string[] = [];
         for (const player of this.players.values()) {
             if (!player.dead) {
                 alive.push(player.id);
-                const beginCutoff = this.lastTickEndTimestamp + subTickIndex * (1000 / (this.tickRate * this.subTickRate));
-                const endCutoff = beginCutoff + (1000 / (this.tickRate * this.subTickRate));
-                const lastInputBeforeCutoff = player.pendingDirectionInputs.findIndex(input =>
-                    input.receivedTimestamp >= beginCutoff
-                    && input.receivedTimestamp < endCutoff
-                    && input.direction !== oppositeDirection(player.direction)
-                    && input.direction !== player.direction
-                );
-                if (lastInputBeforeCutoff !== -1) {
-                    this.addSegment(player, player.pendingDirectionInputs[lastInputBeforeCutoff].direction);
-                    player.pendingDirectionInputs = player.pendingDirectionInputs.slice(lastInputBeforeCutoff + 1);
-                }
                 this.extendLastSegment(player, 1000 / (this.tickRate * this.subTickRate));
             }
         }
@@ -397,7 +399,7 @@ export class Game {
         }
 
         for (let i = 0; i < this.subTickRate; i++) {
-            const alive = this.processSubTick(i);
+            const alive = this.processSubTick();
             if (alive.length <= 1) {
                 this.playing = false;
 
@@ -408,6 +410,7 @@ export class Game {
                     this.server.emit("round_over");
                     this.server.emit("modify_player", {
                         id,
+                        index: player.index,
                         name: player.name,
                         color: player.color,
                         score: player.score
@@ -424,7 +427,5 @@ export class Game {
             player.startingDirection = null;
             this.sendGameState(player);
         }
-
-        this.lastTickEndTimestamp = Date.now();
     }
 }
