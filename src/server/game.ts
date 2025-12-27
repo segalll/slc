@@ -157,6 +157,7 @@ export class Game {
         }
 
         const isLine1Vertical = Math.abs(line1[0][0] - line1[1][0]) < 0.001;
+        const isLine2Vertical = Math.abs(line2[0][0] - line2[1][0]) < 0.001;
 
         let collisionStart: Point;
         let collisionEnd: Point;
@@ -421,12 +422,12 @@ export class Game {
                         continue;
                     }
 
-                    const collision = this.lineToLineCollision(newSegment, otherPlayer.segments[segmentIndex]);
-                    if (collision.collisionStart && collision.collisionEnd) {
-                        player.dead = true;
-                        lastSegment[1] = collision.collisionStart;
-                        return;
-                    }
+                                         const collision = this.lineToLineCollision(newSegment, otherPlayer.segments[segmentIndex]);
+                     if (collision.collisionStart && collision.collisionEnd) {
+                         player.dead = true;
+                         lastSegment[1] = collision.collisionStart;
+                         return;
+                     }
                 }
             }
         }
