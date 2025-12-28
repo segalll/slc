@@ -1,5 +1,5 @@
 import { Server, Socket } from "socket.io";
-import { directionToVector, Direction, Point, Segment, PlayerInfo } from "../shared/model";
+import { directionToVector, Direction, Point, Segment, PlayerInfo, GameSettings } from "../shared/model";
 
 interface Player {
     id: string;
@@ -38,6 +38,9 @@ export class Game {
     lineWidth: number = 0.002;
     minSpawnDistanceFromEdge: number = 0.1;
 
+    static readonly defaultMoveSpeed = 0.3;
+    static readonly defaultLineWidth = 0.002;
+
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
     nextPlayerIndex: number = 0;
@@ -46,6 +49,20 @@ export class Game {
         this.server = server;
         this.players = new Map<string, Player>();
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
+    }
+
+    updateSettings(settings: Partial<GameSettings>) {
+        if (settings.moveSpeed !== undefined) {
+            this.moveSpeed = settings.moveSpeed;
+        }
+        if (settings.lineWidth !== undefined) {
+            this.lineWidth = settings.lineWidth;
+        }
+        this.server.emit("game_settings", {
+            aspectRatio: this.aspectRatio,
+            lineWidth: this.lineWidth,
+            moveSpeed: this.moveSpeed
+        } as GameSettings);
     }
 
     private segmentToPartitions(segment: Segment): number[] {
@@ -228,6 +245,11 @@ export class Game {
         }
         this.players.delete(id);
         this.server.emit("remove", id);
+
+        if (this.players.size === 0) {
+            this.moveSpeed = Game.defaultMoveSpeed;
+            this.lineWidth = Game.defaultLineWidth;
+        }
     }
 
     processInput(id: string, direction: Direction) {

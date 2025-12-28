@@ -70,16 +70,47 @@ roundOver.volume = 0.5;
 const countdown = new Audio("/snd/countdown.wav");
 countdown.volume = 0.5;
 
+const settingsModal = document.getElementById("settings-modal")!;
+const speedSlider = document.getElementById("setting-speed") as HTMLInputElement;
+const speedValue = document.getElementById("setting-speed-value")!;
+const lineWidthSlider = document.getElementById("setting-line-width") as HTMLInputElement;
+const lineWidthValue = document.getElementById("setting-line-width-value")!;
+
+const updateSettingsDisplay = () => {
+    speedValue.textContent = speedSlider.value;
+    lineWidthValue.textContent = lineWidthSlider.value;
+};
+
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+        settingsModal.classList.toggle("hidden");
+    }
+});
+
+speedSlider.addEventListener("input", () => {
+    updateSettingsDisplay();
+    socket.emit("update_settings", { moveSpeed: parseFloat(speedSlider.value) });
+});
+
+lineWidthSlider.addEventListener("input", () => {
+    updateSettingsDisplay();
+    socket.emit("update_settings", { lineWidth: parseFloat(lineWidthSlider.value) });
+});
+
 socket.on("session", (sessionID: string) => {
     localStorage.setItem("sessionID", sessionID);
     socket.auth = { sessionID };
     socket.connect();
 })
 
+let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
 socket.on("connect", () => {
-    setInterval(() => {
-        socket.emit("heartbeat");
-    }, 1000);
+    if (heartbeatInterval === null) {
+        heartbeatInterval = setInterval(() => {
+            socket.emit("heartbeat");
+        }, 1000);
+    }
 
     document.getElementById("join-data")?.remove();
     socket.emit("join");
@@ -90,6 +121,9 @@ socket.on("connect", () => {
 socket.on("game_settings", (gameSettings: GameSettings) => {
     localStorage.setItem("aspectRatio", gameSettings.aspectRatio.toString());
     renderer.updateGameSettings(gameSettings);
+    speedSlider.value = gameSettings.moveSpeed.toString();
+    lineWidthSlider.value = gameSettings.lineWidth.toString();
+    updateSettingsDisplay();
 })
 
 socket.on("connect_error", err => {

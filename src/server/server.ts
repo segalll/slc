@@ -5,6 +5,10 @@ import { randomBytes } from "crypto";
 import { Game } from "./game";
 import { Direction, GameSettings } from "../shared/model";
 
+interface SessionSocket extends Socket {
+    sessionID: string;
+}
+
 const randomID = () => randomBytes(8).toString("hex");
 
 const app = express();
@@ -30,12 +34,14 @@ interface Session {
 
 const sessionStore = new Map<string, Session>();
 
-io.use((socket: Socket, next) => {
+io.use((socket, next) => {
+    const sessionSocket = socket as SessionSocket;
     const sessionID = socket.handshake.auth.sessionID;
     if (sessionID) {
         const session = sessionStore.get(sessionID);
         if (session) {
-            (socket as any).sessionID = sessionID;
+            sessionSocket.sessionID = sessionID;
+            session.pendingDeletion = false;
             return next();
         }
     }
@@ -43,9 +49,9 @@ io.use((socket: Socket, next) => {
     if (!username) {
         return next(new Error("invalid session"));
     }
-    (socket as any).sessionID = randomID();
-    sessionStore.set((socket as any).sessionID, {
-        sessionID: (socket as any).sessionID,
+    sessionSocket.sessionID = randomID();
+    sessionStore.set(sessionSocket.sessionID, {
+        sessionID: sessionSocket.sessionID,
         userID: randomID(),
         username,
         color: socket.handshake.auth.color,
@@ -58,8 +64,8 @@ const game = new Game(io);
 
 const timeout = 3000; // ms
 
-io.on("connection", (socket: Socket) => {
-    const session = sessionStore.get((socket as any).sessionID)!;
+io.on("connection", (socket) => {
+    const session = sessionStore.get((socket as SessionSocket).sessionID)!;
     socket.emit("session", session.sessionID);
 
     console.log(`Connection | ID: ${session.userID}`);
@@ -67,9 +73,14 @@ io.on("connection", (socket: Socket) => {
         console.log(`Join | ID: ${session.userID}`);
         socket.emit("game_settings", {
             aspectRatio: game.aspectRatio,
-            lineWidth: game.lineWidth
+            lineWidth: game.lineWidth,
+            moveSpeed: game.moveSpeed
         } as GameSettings);
         game.addPlayer(socket, session.userID, session.username, session.color);
+    })
+
+    socket.on("update_settings", (settings: Partial<GameSettings>) => {
+        game.updateSettings(settings);
     })
 
     socket.on("input", (direction: Direction) => {

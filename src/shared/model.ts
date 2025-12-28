@@ -46,7 +46,7 @@ export const oppositeDirection = (direction: Direction | null) => {
     }
 }
 
-export const directionToVector = (direction: Direction) => {
+export const directionToVector = (direction: Direction): [number, number] => {
     switch (direction) {
         case Direction.Up:
             return [0, 1];
@@ -62,4 +62,5 @@ export const directionToVector = (direction: Direction) => {
 export interface GameSettings {
     aspectRatio: number;
     lineWidth: number;
+    moveSpeed: number;
 }

@@ -28,6 +28,7 @@ export class Renderer {
     gl: WebGL2RenderingContext;
     playerProgram: WebGLProgram;
     mvpUbo: WebGLBuffer;
+    colorUniform: WebGLUniformLocation;
 
     players: Map<string, Player>;
     indexToId: Map<number, string>;
@@ -83,6 +84,8 @@ export class Renderer {
         gl.bindBuffer(gl.UNIFORM_BUFFER, null);
         gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, this.mvpUbo);
         gl.uniformBlockBinding(this.playerProgram, mvpBlockIndex, 0);
+
+        this.colorUniform = gl.getUniformLocation(this.playerProgram, "uColor")!;
 
         gl.clearColor(0, 0, 0, 1);
 
@@ -281,7 +284,7 @@ export class Renderer {
             }
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-            this.gl.uniform3fv(this.gl.getUniformLocation(this.playerProgram, "uColor"), player.color);
+            this.gl.uniform3fv(this.colorUniform, player.color);
             this.gl.drawArrays(this.gl.TRIANGLES, 0, 6 * player.segmentCount);
             player.segmentCount = 0;
         }

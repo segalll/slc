@@ -4,8 +4,8 @@ import { Direction } from "../shared/model";
 export class InputManager {
     socket: Socket;
     keyMap: Map<string, Direction>;
-    startX: number;
-    startY: number;
+    startX: number = 0;
+    startY: number = 0;
 
     constructor(socket: Socket) {
         this.socket = socket;
