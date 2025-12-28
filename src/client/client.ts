@@ -75,14 +75,17 @@ const speedSlider = document.getElementById("setting-speed") as HTMLInputElement
 const speedValue = document.getElementById("setting-speed-value")!;
 const lineWidthSlider = document.getElementById("setting-line-width") as HTMLInputElement;
 const lineWidthValue = document.getElementById("setting-line-width-value")!;
+const aspectRatioSlider = document.getElementById("setting-aspect-ratio") as HTMLInputElement;
+const aspectRatioValue = document.getElementById("setting-aspect-ratio-value")!;
 
 const updateSettingsDisplay = () => {
     speedValue.textContent = speedSlider.value;
     lineWidthValue.textContent = lineWidthSlider.value;
+    aspectRatioValue.textContent = aspectRatioSlider.value;
 };
 
 document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
+    if (e.key === "Escape" && socket.connected) {
         settingsModal.classList.toggle("hidden");
     }
 });
@@ -95,6 +98,11 @@ speedSlider.addEventListener("input", () => {
 lineWidthSlider.addEventListener("input", () => {
     updateSettingsDisplay();
     socket.emit("update_settings", { lineWidth: parseFloat(lineWidthSlider.value) });
+});
+
+aspectRatioSlider.addEventListener("input", () => {
+    updateSettingsDisplay();
+    socket.emit("update_settings", { aspectRatio: parseFloat(aspectRatioSlider.value) });
 });
 
 socket.on("session", (sessionID: string) => {
@@ -123,6 +131,7 @@ socket.on("game_settings", (gameSettings: GameSettings) => {
     renderer.updateGameSettings(gameSettings);
     speedSlider.value = gameSettings.moveSpeed.toString();
     lineWidthSlider.value = gameSettings.lineWidth.toString();
+    aspectRatioSlider.value = gameSettings.aspectRatio.toString();
     updateSettingsDisplay();
 })
 

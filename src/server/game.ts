@@ -40,6 +40,7 @@ export class Game {
 
     static readonly defaultMoveSpeed = 0.3;
     static readonly defaultLineWidth = 0.002;
+    static readonly defaultAspectRatio = 1.5;
 
     playing: boolean = false;
     prevAlive: string[] = []; // list of ids of players that were alive last tick
@@ -57,6 +58,9 @@ export class Game {
         }
         if (settings.lineWidth !== undefined) {
             this.lineWidth = settings.lineWidth;
+        }
+        if (settings.aspectRatio !== undefined) {
+            this.aspectRatio = settings.aspectRatio;
         }
         this.server.emit("game_settings", {
             aspectRatio: this.aspectRatio,
@@ -249,6 +253,7 @@ export class Game {
         if (this.players.size === 0) {
             this.moveSpeed = Game.defaultMoveSpeed;
             this.lineWidth = Game.defaultLineWidth;
+            this.aspectRatio = Game.defaultAspectRatio;
         }
     }
 
