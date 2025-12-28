@@ -33,7 +33,7 @@ export class Game {
     numPartitions: number = 10; // number of partitions per axis
     moveSpeed: number = 0.3;
     tickRate: number = 30;
-    subTickRate: number = 2;
+    subTickRate: number = 5;
     aspectRatio: number = 1.5;
     lineWidth: number = 0.002;
     minSpawnDistanceFromEdge: number = 0.1;
@@ -128,13 +128,15 @@ export class Game {
             line1BoundingBox[0][1] <= line2BoundingBox[1][1] &&
             line1BoundingBox[1][1] >= line2BoundingBox[0][1]
         ) {
+            const movingRight = line1[0][0] < line1[1][0];
+            const movingUp = line1[0][1] < line1[1][1];
             const collisionStart: Point = [
-                line1Vertical ? line1[1][0] : (line1[0][0] < line1[1][0] ? line2BoundingBox[0][0] : line2BoundingBox[1][0]),
-                line1Vertical ? (line1[0][1] < line1[1][1] ? line2BoundingBox[0][1] : line2BoundingBox[1][1]) : line1[1][1]
+                line1Vertical ? line1[0][0] : (movingRight ? line2BoundingBox[0][0] : line2BoundingBox[1][0]),
+                line1Vertical ? (movingUp ? line2BoundingBox[0][1] : line2BoundingBox[1][1]) : line1[0][1]
             ];
             const collisionEnd: Point = [
-                line1Vertical ? line1[1][0] : (line1[0][0] < line1[1][0] ? line2BoundingBox[1][0] : line2BoundingBox[0][0]),
-                line1Vertical ? (line1[0][1] < line1[1][1] ? line2BoundingBox[1][1] : line2BoundingBox[0][1]) : line1[1][1]
+                line1Vertical ? line1[0][0] : (movingRight ? line2BoundingBox[1][0] : line2BoundingBox[0][0]),
+                line1Vertical ? (movingUp ? line2BoundingBox[1][1] : line2BoundingBox[0][1]) : line1[0][1]
             ];
             return [collisionStart, collisionEnd];
         } else {
@@ -334,7 +336,23 @@ export class Game {
         lastSegment[1][0] += direction[0] * spatialLength;
         lastSegment[1][1] += direction[1] * spatialLength;
 
-        if (lastSegment[1][0] < -this.aspectRatio || lastSegment[1][0] > this.aspectRatio || lastSegment[1][1] < -1.0 || lastSegment[1][1] > 1.0) {
+        if (lastSegment[1][0] < -this.aspectRatio) {
+            lastSegment[1][0] = -this.aspectRatio;
+            player.dead = true;
+            return;
+        }
+        if (lastSegment[1][0] > this.aspectRatio) {
+            lastSegment[1][0] = this.aspectRatio;
+            player.dead = true;
+            return;
+        }
+        if (lastSegment[1][1] < -1.0) {
+            lastSegment[1][1] = -1.0;
+            player.dead = true;
+            return;
+        }
+        if (lastSegment[1][1] > 1.0) {
+            lastSegment[1][1] = 1.0;
             player.dead = true;
             return;
         }
@@ -342,9 +360,14 @@ export class Game {
         const newPartitions = this.segmentToPartitions([ oldSegmentEnd, lastSegment[1] ]);
         for (const partition of newPartitions) {
             player.fieldPartitions[partition].add(player.segments.length - 1);
+        }
+
+        let closestCollision: Point | null = null;
+        let closestDistSq = Infinity;
+
+        for (const partition of newPartitions) {
             for (const player2 of this.players.values()) {
                 for (const segmentIndex of player2.fieldPartitions[partition]) {
-                    // disallow collisions with our turn immediately after segment
                     if (player.id === player2.id && (player.segments.length - 1) - segmentIndex < 2) {
                         continue;
                     }
@@ -352,16 +375,25 @@ export class Game {
                     const consideredSegment = [ oldSegmentEnd, lastSegment[1] ] as Segment;
                     const [collisionStart, collisionEnd] = this.lineToLineCollision(consideredSegment, player2.segments[segmentIndex]);
                     if (collisionStart && collisionEnd) {
-                        player.dead = true;
-                        lastSegment[1] = collisionStart;
-                        break;
+                        const dx = collisionStart[0] - oldSegmentEnd[0];
+                        const dy = collisionStart[1] - oldSegmentEnd[1];
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < closestDistSq) {
+                            closestDistSq = distSq;
+                            closestCollision = collisionStart;
+                        }
                     }
                 }
             }
         }
+
+        if (closestCollision) {
+            player.dead = true;
+            lastSegment[1] = closestCollision;
+        }
     }
 
-    private sendGameState(receiver: Player, sources?: Player[]) {
+    private sendGameState(receiver: Player, sources?: Player[], reliable: boolean = false) {
         const playerData: { index: number; segments: Segment[] }[] = [];
         let totalSegments = 0;
 
@@ -400,7 +432,11 @@ export class Game {
             }
         }
 
-        receiver.socket.volatile.emit("game_state", buffer);
+        if (reliable) {
+            receiver.socket.emit("game_state", buffer);
+        } else {
+            receiver.socket.volatile.emit("game_state", buffer);
+        }
     }
 
     private processSubTick() {
@@ -443,6 +479,10 @@ export class Game {
                         score: player.score
                     } as PlayerInfo);
                 }
+                for (const player of this.players.values()) {
+                    this.sendGameState(player, undefined, true);
+                }
+
                 this.prevAlive = alive;
                 break;
             }

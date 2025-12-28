@@ -9,6 +9,7 @@ interface Player {
     color: [number, number, number];
     score: number;
     segmentCount: number;
+    spawnPosition: [number, number] | null;
 }
 
 const ortho = (left: number, right: number, bottom: number, top: number, near: number, far: number) => {
@@ -34,9 +35,14 @@ export class Renderer {
     indexToId: Map<number, string>;
 
     aspectRatio: number;
-    lineWidth: number = 0.002; // default value
+    lineWidth: number = 0.002;
 
     pendingRedraw: boolean;
+    inCountdown: boolean = false;
+    countdownTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    indicatorVao: WebGLVertexArrayObject;
+    indicatorVbo: WebGLBuffer;
 
     namesElement: HTMLElement;
 
@@ -86,6 +92,14 @@ export class Renderer {
         gl.uniformBlockBinding(this.playerProgram, mvpBlockIndex, 0);
 
         this.colorUniform = gl.getUniformLocation(this.playerProgram, "uColor")!;
+
+        this.indicatorVao = gl.createVertexArray()!;
+        gl.bindVertexArray(this.indicatorVao);
+        this.indicatorVbo = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.indicatorVbo);
+        gl.bufferData(gl.ARRAY_BUFFER, 1024 * 4, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
         gl.clearColor(0, 0, 0, 1);
 
@@ -168,6 +182,17 @@ export class Renderer {
 
     prepareRound() {
         this.pendingRedraw = true;
+        this.inCountdown = true;
+        for (const player of this.players.values()) {
+            player.spawnPosition = null;
+        }
+        if (this.countdownTimeout) {
+            clearTimeout(this.countdownTimeout);
+        }
+        this.countdownTimeout = setTimeout(() => {
+            this.inCountdown = false;
+            this.pendingRedraw = true;
+        }, 3000);
     }
 
     modifyPlayer(playerInfo: PlayerInfo) {
@@ -200,7 +225,8 @@ export class Renderer {
                 name: playerInfo.name,
                 color: playerInfo.color,
                 score: playerInfo.score,
-                segmentCount: 0
+                segmentCount: 0,
+                spawnPosition: null
             });
 
             const nameElement = document.createElement("pre");
@@ -230,6 +256,13 @@ export class Renderer {
             }
 
             const player = this.players.get(playerId)!;
+
+            if (this.inCountdown && player.spawnPosition === null && numSegments > 0) {
+                player.spawnPosition = [
+                    view.getFloat32(floatOffset, true),
+                    view.getFloat32(floatOffset + 4, true)
+                ];
+            }
 
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
@@ -289,6 +322,42 @@ export class Renderer {
             player.segmentCount = 0;
         }
 
+        if (this.inCountdown) {
+            this.renderSpawnIndicators();
+        }
+
         requestAnimationFrame(() => this.renderLoop());
+    }
+
+    private renderSpawnIndicators() {
+        const size = 0.015;
+        const vertices: number[] = [];
+
+        for (const player of this.players.values()) {
+            if (!player.spawnPosition) continue;
+            const [cx, cy] = player.spawnPosition;
+            vertices.push(
+                cx - size, cy - size,
+                cx + size, cy - size,
+                cx - size, cy + size,
+                cx - size, cy + size,
+                cx + size, cy - size,
+                cx + size, cy + size
+            );
+        }
+
+        if (vertices.length === 0) return;
+
+        this.gl.bindVertexArray(this.indicatorVao);
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.indicatorVbo);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, new Float32Array(vertices));
+
+        let offset = 0;
+        for (const player of this.players.values()) {
+            if (!player.spawnPosition) continue;
+            this.gl.uniform3fv(this.colorUniform, player.color);
+            this.gl.drawArrays(this.gl.TRIANGLES, offset, 6);
+            offset += 6;
+        }
     }
 }
