@@ -1,9 +1,10 @@
-import * as express from "express";
+import express from "express";
 import { Server, Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
-import { Game } from "./game";
-import { Direction, GameSettings } from "../shared/model";
+import { Game } from "./game.js";
+import { Direction } from "../shared/model.js";
+import type { GameSettings } from "../shared/model.js";
 
 interface SessionSocket extends Socket {
     sessionID: string;

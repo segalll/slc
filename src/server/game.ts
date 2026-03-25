@@ -1,5 +1,6 @@
 import { Server, Socket } from "socket.io";
-import { directionToVector, Direction, Point, Segment, PlayerInfo, GameSettings } from "../shared/model";
+import { directionToVector, Direction } from "../shared/model.js";
+import type { Point, Segment, PlayerInfo, GameSettings } from "../shared/model.js";
 
 interface Player {
     id: string;

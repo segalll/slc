@@ -2,19 +2,17 @@
   "name": "slc",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "main": "server.js",
   "scripts": {
-    "clean": "rimraf build/* dist/*",
-    "tsc-dev": "tsc --sourceMap",
-    "tsc-prod": "tsc",
+    "clean": "rm -rf build dist",
     "dist": "mkdir -p dist && cp -R src/client/index.html src/client/css src/client/snd dist",
-    "bundle-dev": "esbuild src/client/client.ts --bundle --minify --sourcemap --outfile=dist/client.js",
-    "bundle-prod": "esbuild src/client/client.ts --bundle --minify --outfile=dist/client.js",
-    "build-dev": "npm-run-all clean tsc-dev dist bundle-dev",
-    "build-prod": "npm-run-all clean tsc-prod dist bundle-prod",
+    "bundle": "esbuild src/client/client.ts --bundle --minify --outfile=dist/client.js",
+    "build": "npm run clean && tsc && npm run dist && npm run bundle",
+    "build:dev": "npm run clean && tsc --sourceMap && npm run dist && npm run bundle -- --sourcemap",
     "start": "node build/server/server.js",
-    "dev": "nodemon --watch src -e ts,html,css --exec npm-run-all build-dev start",
-    "prod": "npm-run-all build-prod start"
+    "dev": "npm run build:dev && (tsc --watch --preserveWatchOutput & npm run bundle -- --watch & node --watch-path=build build/server/server.js)",
+    "prod": "npm run build && npm run start"
   },
   "author": "",
   "license": "ISC",
@@ -25,9 +23,6 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
-    "esbuild": "^0.25.8",
-    "nodemon": "^3.1.10",
-    "npm-run-all": "^4.1.5",
-    "rimraf": "^6.0.1"
+    "esbuild": "^0.25.8"
   }
 }

@@ -1,23 +1,15 @@
 {
   "compilerOptions": {
-    "target": "ES2016",
-    "module": "commonjs",
-    "rootDir": "src",
+    "target": "es2023",
+    "module": "nodenext",
+    "rootDir": "./src",
     "outDir": "build",
     "strict": true,
-    "noImplicitAny": true,
-    "moduleResolution": "node",
-    "esModuleInterop": false,
-    "baseUrl": ".",
-    "paths": {
-      "*": [
-        "node_modules/*",
-        "src/types/*"
-      ]
-    }
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true
   },
   "include": [
-    "src/server/**/*",
-    "src/shared/**/*"
+    "./src/server/**/*",
+    "./src/shared/**/*"
   ]
 }
