@@ -7,8 +7,8 @@ export const gameStatePacket = {
     playerCountBytes: 1,
     playerIndexOffset: 0,
     playerStartIndexOffset: 1,
-    playerSegmentCountOffset: 5,
-    playerHeaderBytes: 7,
+    playerSegmentCountOffset: 3,
+    playerHeaderBytes: 5,
     segmentStartXOffset: 0,
     segmentStartYOffset: 2,
     segmentEndXOffset: 4,
@@ -21,12 +21,12 @@ export const gameTailPacket = {
     playerCountBytes: 1,
     playerIndexOffset: 0,
     playerSegmentIndexOffset: 1,
-    playerEndXOffset: 5,
-    playerEndYOffset: 7,
-    playerBytes: 9
+    playerEndXOffset: 3,
+    playerEndYOffset: 5,
+    playerBytes: 7
 } as const;
 
-const uint16Max = 0xffff;
+export const uint16Max = 0xffff;
 
 export const coordToUint16 = (value: number, min: number, max: number) => {
     const clamped = Math.min(Math.max(value, min), max);

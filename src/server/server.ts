@@ -53,7 +53,8 @@ interface Session {
     userID: string;
     username: string;
     color: string;
-    pendingDeletion: boolean;
+    connectedSockets: number;
+    generation: number;
 }
 
 const sessionStore = new Map<string, Session>();
@@ -65,7 +66,6 @@ io.use((socket, next) => {
         const session = sessionStore.get(sessionID);
         if (session) {
             sessionSocket.sessionID = sessionID;
-            session.pendingDeletion = false;
             return next();
         }
     }
@@ -80,7 +80,8 @@ io.use((socket, next) => {
         userID: randomID(),
         username: username.trim(),
         color,
-        pendingDeletion: false
+        connectedSockets: 0,
+        generation: 0
     });
     next();
 })
@@ -91,6 +92,8 @@ const timeout = 3000; // ms
 
 io.on("connection", (socket) => {
     const session = sessionStore.get((socket as SessionSocket).sessionID)!;
+    session.connectedSockets++;
+    session.generation++;
     socket.emit("session", session.sessionID);
 
     console.log(`Connection | ID: ${session.userID}`);
@@ -115,9 +118,13 @@ io.on("connection", (socket) => {
 
     socket.on("disconnect", () => {
         console.log(`Disconnect | ID: ${session.userID}`);
-        session.pendingDeletion = true;
+        session.connectedSockets = Math.max(0, session.connectedSockets - 1);
+        if (session.connectedSockets > 0) {
+            return;
+        }
+        const generation = ++session.generation;
         setTimeout(() => {
-            if (session.pendingDeletion) {
+            if (session.connectedSockets === 0 && session.generation === generation) {
                 sessionStore.delete(session.sessionID);
                 game.removePlayer(session.userID);
             }

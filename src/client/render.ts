@@ -40,6 +40,7 @@ export class Renderer {
 
     private aspectRatio: number;
     private lineWidth: number = 0.002;
+    private segmentScratch: Float32Array = new Float32Array(floatsPerSegment);
 
     private renderLoopStarted: boolean = false;
     private inCountdown: boolean = false;
@@ -189,6 +190,7 @@ export class Renderer {
         }
         this.countdownTimeout = setTimeout(() => {
             this.inCountdown = false;
+            this.countdownTimeout = null;
         }, 3000);
     }
 
@@ -293,6 +295,12 @@ export class Renderer {
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * uploadStartIndex, data);
     }
 
+    private uploadPlayerSegment(player: Player, segmentIndex: number) {
+        this.segmentToVertices(player.segments[segmentIndex], this.segmentScratch, 0);
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * segmentIndex, this.segmentScratch);
+    }
+
     updateGameState(buffer: ArrayBuffer) {
         if (buffer.byteLength < gameStatePacket.playerCountBytes) {
             return;
@@ -310,7 +318,7 @@ export class Renderer {
 
         for (let p = 0; p < numPlayers; p++) {
             const playerIndex = view.getUint8(offset + gameStatePacket.playerIndexOffset);
-            const startIndex = view.getUint32(offset + gameStatePacket.playerStartIndexOffset, true);
+            const startIndex = view.getUint16(offset + gameStatePacket.playerStartIndexOffset, true);
             const numSegments = view.getUint16(offset + gameStatePacket.playerSegmentCountOffset, true);
             offset += gameStatePacket.playerHeaderBytes;
 
@@ -369,7 +377,7 @@ export class Renderer {
         let offset = gameTailPacket.playerCountBytes;
         for (let p = 0; p < numPlayers; p++) {
             const playerIndex = view.getUint8(offset + gameTailPacket.playerIndexOffset);
-            const segmentIndex = view.getUint32(offset + gameTailPacket.playerSegmentIndexOffset, true);
+            const segmentIndex = view.getUint16(offset + gameTailPacket.playerSegmentIndexOffset, true);
             const end: [number, number] = [
                 uint16ToCoord(view.getUint16(offset + gameTailPacket.playerEndXOffset, true), -this.aspectRatio, this.aspectRatio),
                 uint16ToCoord(view.getUint16(offset + gameTailPacket.playerEndYOffset, true), -1.0, 1.0)
@@ -387,7 +395,7 @@ export class Renderer {
             }
 
             player.segments[segmentIndex][1] = end;
-            this.uploadPlayerSegments(player, segmentIndex);
+            this.uploadPlayerSegment(player, segmentIndex);
         }
     }
     

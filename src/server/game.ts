@@ -1,5 +1,5 @@
 import { Server, type Socket } from "socket.io";
-import { coordToUint16, directionToVector, Direction, gameStatePacket, gameTailPacket } from "../shared/model.js";
+import { coordToUint16, directionToVector, Direction, gameStatePacket, gameTailPacket, uint16Max } from "../shared/model.js";
 import type { Point, Segment, PlayerInfo, GameSettings } from "../shared/model.js";
 
 interface Player {
@@ -229,6 +229,10 @@ export class Game {
         if (!this.players.has(id)) {
             const colorVector = colorFromHex(color);
             const score = 0;
+            if (this.nextPlayerIndex > 0xff) {
+                socket.disconnect(true);
+                return;
+            }
             const index = this.nextPlayerIndex++;
 
             // introduce new player to existing players
@@ -285,12 +289,16 @@ export class Game {
             return;
         }
         this.players.delete(id);
+        for (const otherPlayer of this.players.values()) {
+            otherPlayer.lastSentSegmentIndices.delete(id);
+        }
         this.server.emit("remove", id);
 
         if (this.players.size === 0) {
             this.moveSpeed = Game.defaultMoveSpeed;
             this.lineWidth = Game.defaultLineWidth;
             this.aspectRatio = Game.defaultAspectRatio;
+            this.nextPlayerIndex = 0;
         }
     }
 
@@ -323,6 +331,9 @@ export class Game {
 
     private addSegment(player: Player, direction: Direction): boolean {
         if (player.dead) {
+            return false;
+        }
+        if (player.segments.length >= uint16Max) {
             return false;
         }
 
@@ -462,7 +473,7 @@ export class Game {
 
         for (const { index, startIndex, segments } of playerData) {
             view.setUint8(offset + gameStatePacket.playerIndexOffset, index);
-            view.setUint32(offset + gameStatePacket.playerStartIndexOffset, startIndex, true);
+            view.setUint16(offset + gameStatePacket.playerStartIndexOffset, startIndex, true);
             view.setUint16(offset + gameStatePacket.playerSegmentCountOffset, segments.length, true);
             offset += gameStatePacket.playerHeaderBytes;
 
@@ -478,7 +489,7 @@ export class Game {
         receiver.socket.emit("game_state", buffer);
     }
 
-    private sendGameTail(receiver: Player, reliable: boolean = false) {
+    private sendGameTail(reliable: boolean = false) {
         const playerData: { index: number; segmentIndex: number; end: Point }[] = [];
 
         for (const source of this.players.values()) {
@@ -503,16 +514,18 @@ export class Game {
         let offset = gameTailPacket.playerCountBytes;
         for (const { index, segmentIndex, end } of playerData) {
             view.setUint8(offset + gameTailPacket.playerIndexOffset, index);
-            view.setUint32(offset + gameTailPacket.playerSegmentIndexOffset, segmentIndex, true);
+            view.setUint16(offset + gameTailPacket.playerSegmentIndexOffset, segmentIndex, true);
             view.setUint16(offset + gameTailPacket.playerEndXOffset, coordToUint16(end[0], -this.aspectRatio, this.aspectRatio), true);
             view.setUint16(offset + gameTailPacket.playerEndYOffset, coordToUint16(end[1], -1.0, 1.0), true);
             offset += gameTailPacket.playerBytes;
         }
 
-        if (reliable) {
-            receiver.socket.emit("game_tail", buffer);
-        } else {
-            receiver.socket.volatile.emit("game_tail", buffer);
+        for (const receiver of this.players.values()) {
+            if (reliable) {
+                receiver.socket.emit("game_tail", buffer);
+            } else {
+                receiver.socket.volatile.emit("game_tail", buffer);
+            }
         }
     }
 
@@ -589,8 +602,8 @@ export class Game {
             if (reliableSources.length > 0) {
                 this.sendGameState(receiver, reliableSources);
             }
-            this.sendGameTail(receiver, reliableSources.length > 0);
         }
+        this.sendGameTail(reliableSources.length > 0);
         for (const player of reliableSources) {
             player.pendingReliableState = false;
         }
