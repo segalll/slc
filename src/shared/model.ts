@@ -6,9 +6,9 @@ export const gameStatePacket = {
     playerCountOffset: 0,
     playerCountBytes: 1,
     playerIndexOffset: 0,
-    playerStartIndexOffset: 1,
-    playerSegmentCountOffset: 3,
-    playerHeaderBytes: 5,
+    playerStartIndexOffset: 2,
+    playerSegmentCountOffset: 4,
+    playerHeaderBytes: 6,
     segmentStartXOffset: 0,
     segmentStartYOffset: 2,
     segmentEndXOffset: 4,
@@ -20,10 +20,10 @@ export const gameTailPacket = {
     playerCountOffset: 0,
     playerCountBytes: 1,
     playerIndexOffset: 0,
-    playerSegmentIndexOffset: 1,
-    playerEndXOffset: 3,
-    playerEndYOffset: 5,
-    playerBytes: 7
+    playerSegmentIndexOffset: 2,
+    playerEndXOffset: 4,
+    playerEndYOffset: 6,
+    playerBytes: 8
 } as const;
 
 export const uint16Max = 0xffff;

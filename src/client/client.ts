@@ -32,6 +32,9 @@ const attemptConnection = () => {
         socket.auth = { sessionID };
         socket.connect();
     } else {
+        if (document.getElementById("join-data")) {
+            return;
+        }
         const joinDataElement = document.createElement("div");
         joinDataElement.id = "join-data";
 

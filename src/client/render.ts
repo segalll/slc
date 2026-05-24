@@ -317,7 +317,7 @@ export class Renderer {
         let segmentOffset = headerSize;
 
         for (let p = 0; p < numPlayers; p++) {
-            const playerIndex = view.getUint8(offset + gameStatePacket.playerIndexOffset);
+            const playerIndex = view.getUint16(offset + gameStatePacket.playerIndexOffset, true);
             const startIndex = view.getUint16(offset + gameStatePacket.playerStartIndexOffset, true);
             const numSegments = view.getUint16(offset + gameStatePacket.playerSegmentCountOffset, true);
             offset += gameStatePacket.playerHeaderBytes;
@@ -376,7 +376,7 @@ export class Renderer {
 
         let offset = gameTailPacket.playerCountBytes;
         for (let p = 0; p < numPlayers; p++) {
-            const playerIndex = view.getUint8(offset + gameTailPacket.playerIndexOffset);
+            const playerIndex = view.getUint16(offset + gameTailPacket.playerIndexOffset, true);
             const segmentIndex = view.getUint16(offset + gameTailPacket.playerSegmentIndexOffset, true);
             const end: [number, number] = [
                 uint16ToCoord(view.getUint16(offset + gameTailPacket.playerEndXOffset, true), -this.aspectRatio, this.aspectRatio),

@@ -53,7 +53,7 @@ interface Session {
     userID: string;
     username: string;
     color: string;
-    connectedSockets: number;
+    socket: SessionSocket | null;
     generation: number;
 }
 
@@ -80,7 +80,7 @@ io.use((socket, next) => {
         userID: randomID(),
         username: username.trim(),
         color,
-        connectedSockets: 0,
+        socket: null,
         generation: 0
     });
     next();
@@ -91,8 +91,10 @@ const game = new Game(io);
 const timeout = 3000; // ms
 
 io.on("connection", (socket) => {
-    const session = sessionStore.get((socket as SessionSocket).sessionID)!;
-    session.connectedSockets++;
+    const sessionSocket = socket as SessionSocket;
+    const session = sessionStore.get(sessionSocket.sessionID)!;
+    session.socket?.disconnect(true);
+    session.socket = sessionSocket;
     session.generation++;
     socket.emit("session", session.sessionID);
 
@@ -118,13 +120,13 @@ io.on("connection", (socket) => {
 
     socket.on("disconnect", () => {
         console.log(`Disconnect | ID: ${session.userID}`);
-        session.connectedSockets = Math.max(0, session.connectedSockets - 1);
-        if (session.connectedSockets > 0) {
+        if (session.socket !== sessionSocket) {
             return;
         }
+        session.socket = null;
         const generation = ++session.generation;
         setTimeout(() => {
-            if (session.connectedSockets === 0 && session.generation === generation) {
+            if (session.socket === null && session.generation === generation) {
                 sessionStore.delete(session.sessionID);
                 game.removePlayer(session.userID);
             }

@@ -229,7 +229,7 @@ export class Game {
         if (!this.players.has(id)) {
             const colorVector = colorFromHex(color);
             const score = 0;
-            if (this.nextPlayerIndex > 0xff) {
+            if (this.nextPlayerIndex > uint16Max) {
                 socket.disconnect(true);
                 return;
             }
@@ -298,7 +298,6 @@ export class Game {
             this.moveSpeed = Game.defaultMoveSpeed;
             this.lineWidth = Game.defaultLineWidth;
             this.aspectRatio = Game.defaultAspectRatio;
-            this.nextPlayerIndex = 0;
         }
     }
 
@@ -472,7 +471,7 @@ export class Game {
         let segmentOffset = headerSize;
 
         for (const { index, startIndex, segments } of playerData) {
-            view.setUint8(offset + gameStatePacket.playerIndexOffset, index);
+            view.setUint16(offset + gameStatePacket.playerIndexOffset, index, true);
             view.setUint16(offset + gameStatePacket.playerStartIndexOffset, startIndex, true);
             view.setUint16(offset + gameStatePacket.playerSegmentCountOffset, segments.length, true);
             offset += gameStatePacket.playerHeaderBytes;
@@ -513,7 +512,7 @@ export class Game {
 
         let offset = gameTailPacket.playerCountBytes;
         for (const { index, segmentIndex, end } of playerData) {
-            view.setUint8(offset + gameTailPacket.playerIndexOffset, index);
+            view.setUint16(offset + gameTailPacket.playerIndexOffset, index, true);
             view.setUint16(offset + gameTailPacket.playerSegmentIndexOffset, segmentIndex, true);
             view.setUint16(offset + gameTailPacket.playerEndXOffset, coordToUint16(end[0], -this.aspectRatio, this.aspectRatio), true);
             view.setUint16(offset + gameTailPacket.playerEndYOffset, coordToUint16(end[1], -1.0, 1.0), true);
