@@ -308,7 +308,11 @@ export class Game {
             return;
         }
 
-        this.addSegment(player, direction);
+        if (this.addSegment(player, direction)) {
+            for (const receiver of this.players.values()) {
+                this.sendGameState(receiver, [player]);
+            }
+        }
     }
 
     private resetSentSegments(player: Player) {
@@ -317,9 +321,9 @@ export class Game {
         }
     }
 
-    private addSegment(player: Player, direction: Direction) {
+    private addSegment(player: Player, direction: Direction): boolean {
         if (player.dead) {
-            return;
+            return false;
         }
 
         const lastDirection = directionToVector(player.direction);
@@ -327,7 +331,7 @@ export class Game {
             (direction === Direction.Up && lastDirection[0] === 0.0) ||
             (direction === Direction.Down && lastDirection[0] === 0.0) ||
             (direction === Direction.Left && lastDirection[1] === 0.0)) {
-            return;
+            return false;
         }
 
         player.direction = direction;
@@ -354,6 +358,7 @@ export class Game {
                 break;
         }
         player.segments.push([ newPoint, [newPoint[0], newPoint[1]] ] as Segment);
+        return true;
     }
 
     private extendLastSegment(player: Player, duration: number) {
