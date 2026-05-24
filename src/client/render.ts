@@ -1,5 +1,4 @@
-import type { Socket } from "socket.io-client";
-import type { GameSettings, PlayerInfo } from "../shared/model";
+import type { GameSettings, PlayerInfo, Segment } from "../shared/model";
 
 interface Player {
     id: string;
@@ -8,9 +7,14 @@ interface Player {
     name: string;
     color: [number, number, number];
     score: number;
-    segmentCount: number;
+    segments: Segment[];
+    segmentCapacity: number;
     spawnPosition: [number, number] | null;
 }
+
+const floatsPerSegment = 12;
+const verticesPerSegment = 6;
+const initialSegmentCapacity = 64;
 
 const ortho = (left: number, right: number, bottom: number, top: number, near: number, far: number) => {
     const lr = 1 / (left - right);
@@ -25,7 +29,6 @@ const ortho = (left: number, right: number, bottom: number, top: number, near: n
 }
 
 export class Renderer {
-    private socket: Socket;
     private gl: WebGL2RenderingContext;
     private playerProgram: WebGLProgram;
     private mvpUbo: WebGLBuffer;
@@ -37,7 +40,6 @@ export class Renderer {
     private aspectRatio: number;
     private lineWidth: number = 0.002;
 
-    private pendingRedraw: boolean;
     private renderLoopStarted: boolean = false;
     private inCountdown: boolean = false;
     private countdownTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -47,9 +49,9 @@ export class Renderer {
 
     private namesElement: HTMLElement;
 
-    constructor(socket: Socket, aspectRatio: number) {
+    constructor(aspectRatio: number) {
         const canvas = document.getElementById('game') as HTMLCanvasElement;
-        const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true }) as WebGL2RenderingContext;
+        const gl = canvas.getContext('webgl2') as WebGL2RenderingContext;
 
         const playerVertexShader = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
         gl.shaderSource(playerVertexShader,
@@ -107,14 +109,11 @@ export class Renderer {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-        this.socket = socket;
         this.gl = gl;
         this.players = new Map<string, Player>();
         this.indexToId = new Map<number, string>();
 
         this.aspectRatio = aspectRatio;
-
-        this.pendingRedraw = false;
 
         this.namesElement = document.getElementById("names")!;
 
@@ -134,7 +133,12 @@ export class Renderer {
 
     updateGameSettings(gameSettings: GameSettings) {
         this.updateAspectRatio(gameSettings.aspectRatio);
-        this.lineWidth = gameSettings.lineWidth;
+        if (this.lineWidth !== gameSettings.lineWidth) {
+            this.lineWidth = gameSettings.lineWidth;
+            for (const player of this.players.values()) {
+                this.uploadPlayerSegments(player);
+            }
+        }
     }
 
     removePlayer(id: string) {
@@ -144,9 +148,13 @@ export class Renderer {
                 break;
             }
         }
-        this.players.delete(id);
+        const player = this.players.get(id);
+        if (player) {
+            this.gl.deleteBuffer(player.vbo);
+            this.gl.deleteVertexArray(player.vao);
+            this.players.delete(id);
+        }
         document.getElementById(id)?.remove();
-        this.pendingRedraw = true;
     }
 
     private resize() {
@@ -167,24 +175,12 @@ export class Renderer {
             this.gl.canvas.height = newWidth / this.aspectRatio;
         }
         this.gl.viewport(0, 0, this.gl.canvas.width, this.gl.canvas.height);
-
-        // insane hack to get around browser clearing canvas on resize slightly after this function is called
-        // this hopefully means we get our full player data again after the canvas is cleared
-        // this is terrible. a better solution is to render to a framebuffer and then just render the framebuffer on the canvas
-        // unfortunately, webgl decided it was going to filter my framebuffer even though i set the size to the EXACT size of the canvas
-        // normally, filtering would be fine, but in this game with very thin lines, the lines just disappear entirely.
-        // don't ask me why the framebuffer decided to filter. maybe floating point precision issues? but it doesn't make any sense.
-        // the canvas itself is literally implemented with a framebuffer. i decide to create a framebuffer with the exact same size and it gets filtered.
-        // anyway, this is my best solution. i could also just render all the vertices, but that's less efficient :(
-        setTimeout(() => {
-            this.socket.emit("redraw");
-        }, 50);
     }
 
     prepareRound() {
-        this.pendingRedraw = true;
         this.inCountdown = true;
         for (const player of this.players.values()) {
+            player.segments = [];
             player.spawnPosition = null;
         }
         if (this.countdownTimeout) {
@@ -192,7 +188,6 @@ export class Renderer {
         }
         this.countdownTimeout = setTimeout(() => {
             this.inCountdown = false;
-            this.pendingRedraw = true;
         }, 3000);
     }
 
@@ -214,21 +209,23 @@ export class Renderer {
             
             const vbo = this.gl.createBuffer();
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, vbo);
-            this.gl.bufferData(this.gl.ARRAY_BUFFER, 1024 * 512, this.gl.DYNAMIC_DRAW);
 
             this.gl.enableVertexAttribArray(0);
             this.gl.vertexAttribPointer(0, 2, this.gl.FLOAT, false, 0, 0);
 
-            this.players.set(playerInfo.id, {
+            const player: Player = {
                 id: playerInfo.id,
                 vao: vao!,
                 vbo: vbo!,
                 name: playerInfo.name,
                 color: playerInfo.color,
                 score: playerInfo.score,
-                segmentCount: 0,
+                segments: [],
+                segmentCapacity: 0,
                 spawnPosition: null
-            });
+            };
+            this.players.set(playerInfo.id, player);
+            this.ensureSegmentCapacity(player, initialSegmentCapacity);
 
             const nameElement = document.createElement("pre");
             nameElement.id = playerInfo.id;
@@ -238,17 +235,75 @@ export class Renderer {
         }
     }
 
+    private ensureSegmentCapacity(player: Player, segmentCount: number) {
+        if (segmentCount <= player.segmentCapacity) {
+            return false;
+        }
+
+        let segmentCapacity = Math.max(initialSegmentCapacity, player.segmentCapacity);
+        while (segmentCapacity < segmentCount) {
+            segmentCapacity *= 2;
+        }
+
+        player.segmentCapacity = segmentCapacity;
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, segmentCapacity * floatsPerSegment * 4, this.gl.DYNAMIC_DRAW);
+        return true;
+    }
+
+    private segmentToVertices(segment: Segment, output: Float32Array, offset: number) {
+        const [[p1x, p1y], [p2x, p2y]] = segment;
+        if (p1x === p2x) {
+            output.set([
+                p1x - this.lineWidth, p1y,
+                p1x + this.lineWidth, p1y,
+                p2x - this.lineWidth, p2y,
+                p2x - this.lineWidth, p2y,
+                p1x + this.lineWidth, p1y,
+                p2x + this.lineWidth, p2y
+            ], offset);
+        } else {
+            output.set([
+                p1x, p1y - this.lineWidth,
+                p1x, p1y + this.lineWidth,
+                p2x, p2y - this.lineWidth,
+                p2x, p2y - this.lineWidth,
+                p1x, p1y + this.lineWidth,
+                p2x, p2y + this.lineWidth
+            ], offset);
+        }
+    }
+
+    private uploadPlayerSegments(player: Player, startIndex: number = 0) {
+        if (player.segments.length === 0) {
+            return;
+        }
+
+        const grew = this.ensureSegmentCapacity(player, player.segments.length);
+        const uploadStartIndex = grew ? 0 : startIndex;
+        const uploadSegments = player.segments.slice(uploadStartIndex);
+        const data = new Float32Array(floatsPerSegment * uploadSegments.length);
+
+        for (let i = 0; i < uploadSegments.length; i++) {
+            this.segmentToVertices(uploadSegments[i], data, floatsPerSegment * i);
+        }
+
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * uploadStartIndex, data);
+    }
+
     updateGameState(buffer: ArrayBuffer) {
         const view = new DataView(buffer);
         const numPlayers = view.getUint8(0);
 
         let offset = 1;
-        let floatOffset = 1 + numPlayers * 3;
+        let floatOffset = 1 + numPlayers * 7;
 
         for (let p = 0; p < numPlayers; p++) {
             const playerIndex = view.getUint8(offset);
-            const numSegments = view.getUint16(offset + 1, true);
-            offset += 3;
+            const startIndex = view.getUint32(offset + 1, true);
+            const numSegments = view.getUint16(offset + 5, true);
+            offset += 7;
 
             const playerId = this.indexToId.get(playerIndex);
             if (!playerId || !this.players.has(playerId)) {
@@ -257,6 +312,7 @@ export class Renderer {
             }
 
             const player = this.players.get(playerId)!;
+            const segments: Segment[] = [];
 
             if (this.inCountdown && player.spawnPosition === null && numSegments > 0) {
                 player.spawnPosition = [
@@ -265,40 +321,17 @@ export class Renderer {
                 ];
             }
 
-            this.gl.bindVertexArray(player.vao);
-            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-            const data = new Float32Array(12 * numSegments);
-
             for (let i = 0; i < numSegments; i++) {
                 const p1x = view.getFloat32(floatOffset, true);
                 const p1y = view.getFloat32(floatOffset + 4, true);
                 const p2x = view.getFloat32(floatOffset + 8, true);
                 const p2y = view.getFloat32(floatOffset + 12, true);
                 floatOffset += 16;
-
-                if (p1x === p2x) {
-                    data.set([
-                        p1x - this.lineWidth, p1y,
-                        p1x + this.lineWidth, p1y,
-                        p2x - this.lineWidth, p2y,
-                        p2x - this.lineWidth, p2y,
-                        p1x + this.lineWidth, p1y,
-                        p2x + this.lineWidth, p2y
-                    ], 12 * i);
-                } else {
-                    data.set([
-                        p1x, p1y - this.lineWidth,
-                        p1x, p1y + this.lineWidth,
-                        p2x, p2y - this.lineWidth,
-                        p2x, p2y - this.lineWidth,
-                        p1x, p1y + this.lineWidth,
-                        p2x, p2y + this.lineWidth
-                    ], 12 * i);
-                }
+                segments.push([[p1x, p1y], [p2x, p2y]]);
             }
 
-            this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 12 * 4 * player.segmentCount, data);
-            player.segmentCount += numSegments;
+            player.segments.splice(startIndex, player.segments.length - startIndex, ...segments);
+            this.uploadPlayerSegments(player, startIndex);
         }
     }
     
@@ -312,23 +345,17 @@ export class Renderer {
 
     private renderFrame() {
         this.resize();
-
-        if (this.pendingRedraw) {
-            this.pendingRedraw = false;
-            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
-            this.socket.emit("redraw");
-        }
+        this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
         this.gl.useProgram(this.playerProgram);
         for (const player of this.players.values()) {
-            if (player.segmentCount === 0) {
+            if (player.segments.length === 0) {
                 continue;
             }
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
             this.gl.uniform3fv(this.colorUniform, player.color);
-            this.gl.drawArrays(this.gl.TRIANGLES, 0, 6 * player.segmentCount);
-            player.segmentCount = 0;
+            this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * player.segments.length);
         }
 
         if (this.inCountdown) {

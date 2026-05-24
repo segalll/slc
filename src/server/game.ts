@@ -17,7 +17,6 @@ interface Player {
 
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
-    pendingRedraw: boolean;
     pendingReliableState: boolean;
 }
 
@@ -216,6 +215,9 @@ export class Game {
         }
 
         this.server.emit("starting");
+        for (const player of this.players.values()) {
+            this.sendGameState(player, undefined, true);
+        }
 
         this.prevAlive = Array.from(this.players.keys());
         setTimeout(() => {
@@ -267,12 +269,12 @@ export class Game {
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
-                pendingRedraw: false,
                 pendingReliableState: false
             });
         } else {
-            this.players.get(id)!.socket = socket;
-            this.redraw(id);
+            const player = this.players.get(id)!;
+            player.socket = socket;
+            this.resetSentSegments(player);
         }
 
         for (const player of this.players.values()) {
@@ -318,15 +320,10 @@ export class Game {
         this.addSegment(player, direction);
     }
 
-    redraw(id: string) {
-        if (!this.players.has(id)) {
-            return;
-        }
-        const player = this.players.get(id)!;
+    private resetSentSegments(player: Player) {
         for (const playerId of this.players.keys()) {
             player.lastSentSegmentIndices.set(playerId, 0);
         }
-        player.pendingRedraw = true;
     }
 
     private addSegment(player: Player, direction: Direction) {
@@ -443,14 +440,14 @@ export class Game {
     }
 
     private sendGameState(receiver: Player, sources?: Player[], reliable: boolean = false) {
-        const playerData: { index: number; segments: Segment[] }[] = [];
+        const playerData: { index: number; startIndex: number; segments: Segment[] }[] = [];
         let totalSegments = 0;
 
         for (const source of (sources ?? this.players.values())) {
             const lastSentIndex = receiver.lastSentSegmentIndices.get(source.id) ?? 0;
             const segments = source.segments.slice(lastSentIndex);
             if (segments.length > 0) {
-                playerData.push({ index: source.index, segments });
+                playerData.push({ index: source.index, startIndex: lastSentIndex, segments });
                 totalSegments += segments.length;
                 receiver.lastSentSegmentIndices.set(source.id, source.segments.length - 1);
             }
@@ -458,7 +455,7 @@ export class Game {
 
         if (playerData.length === 0) return;
 
-        const headerSize = 1 + playerData.length * 3;
+        const headerSize = 1 + playerData.length * 7;
         const buffer = new ArrayBuffer(headerSize + totalSegments * 16);
         const view = new DataView(buffer);
 
@@ -467,10 +464,11 @@ export class Game {
         let offset = 1;
         let floatOffset = headerSize;
 
-        for (const { index, segments } of playerData) {
+        for (const { index, startIndex, segments } of playerData) {
             view.setUint8(offset, index);
-            view.setUint16(offset + 1, segments.length, true);
-            offset += 3;
+            view.setUint32(offset + 1, startIndex, true);
+            view.setUint16(offset + 5, segments.length, true);
+            offset += 7;
 
             for (let i = 0; i < segments.length; i++) {
                 view.setFloat32(floatOffset, segments[i][0][0], true);
@@ -501,12 +499,6 @@ export class Game {
 
     private gameLoop() {
         if (!this.playing) {
-            for (const player of this.players.values()) {
-                if (player.pendingRedraw) {
-                    player.pendingRedraw = false;
-                    this.sendGameState(player, undefined, true);
-                }
-            }
             return;
         }
 
@@ -531,7 +523,6 @@ export class Game {
                     } as PlayerInfo);
                 }
                 for (const player of this.players.values()) {
-                    player.pendingRedraw = false;
                     player.startingDirection = null;
                     player.pendingReliableState = false;
                     this.sendGameState(player, undefined, true);
@@ -545,7 +536,6 @@ export class Game {
 
         const reliable = Array.from(this.players.values()).some(player => player.pendingReliableState);
         for (const player of this.players.values()) {
-            player.pendingRedraw = false;
             player.startingDirection = null;
             this.sendGameState(player, undefined, reliable);
             player.pendingReliableState = false;

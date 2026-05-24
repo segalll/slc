@@ -63,7 +63,7 @@ const attemptConnection = () => {
 
 attemptConnection();
 
-const renderer = new Renderer(socket, parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
+const renderer = new Renderer(parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
 const inputManager = new InputManager(socket);
 const roundOver = new Audio("/snd/round_over.wav");
 roundOver.volume = 0.5;

@@ -113,10 +113,6 @@ io.on("connection", (socket) => {
         }
     })
 
-    socket.on("redraw", () => {
-        game.redraw(session.userID);
-    })
-
     socket.on("disconnect", () => {
         console.log(`Disconnect | ID: ${session.userID}`);
         session.pendingDeletion = true;
