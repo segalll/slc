@@ -438,10 +438,6 @@ export class Game {
             const lastSentIndex = receiver.lastSentSegmentIndices.get(source.id) ?? 0;
             const segments = source.segments.slice(lastSentIndex);
             if (segments.length > 0) {
-                if (!source.dead) {
-                    const activeSegment = segments[segments.length - 1];
-                    segments[segments.length - 1] = [activeSegment[0], [activeSegment[0][0], activeSegment[0][1]]];
-                }
                 playerData.push({ index: source.index, startIndex: lastSentIndex, segments });
                 totalSegments += segments.length;
                 receiver.lastSentSegmentIndices.set(source.id, source.segments.length - 1);
@@ -477,7 +473,7 @@ export class Game {
         receiver.socket.emit("game_state", buffer);
     }
 
-    private sendGameTail(receiver: Player) {
+    private sendGameTail(receiver: Player, reliable: boolean = false) {
         const playerData: { index: number; segmentIndex: number; end: Point }[] = [];
 
         for (const source of this.players.values()) {
@@ -508,7 +504,11 @@ export class Game {
             offset += gameTailPacket.playerBytes;
         }
 
-        receiver.socket.volatile.emit("game_tail", buffer);
+        if (reliable) {
+            receiver.socket.emit("game_tail", buffer);
+        } else {
+            receiver.socket.volatile.emit("game_tail", buffer);
+        }
     }
 
     private processSubTick() {
@@ -584,7 +584,7 @@ export class Game {
             if (reliableSources.length > 0) {
                 this.sendGameState(receiver, reliableSources);
             }
-            this.sendGameTail(receiver);
+            this.sendGameTail(receiver, reliableSources.length > 0);
         }
         for (const player of reliableSources) {
             player.pendingReliableState = false;
