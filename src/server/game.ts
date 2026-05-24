@@ -438,6 +438,10 @@ export class Game {
             const lastSentIndex = receiver.lastSentSegmentIndices.get(source.id) ?? 0;
             const segments = source.segments.slice(lastSentIndex);
             if (segments.length > 0) {
+                if (!source.dead) {
+                    const activeSegment = segments[segments.length - 1];
+                    segments[segments.length - 1] = [activeSegment[0], [activeSegment[0][0], activeSegment[0][1]]];
+                }
                 playerData.push({ index: source.index, startIndex: lastSentIndex, segments });
                 totalSegments += segments.length;
                 receiver.lastSentSegmentIndices.set(source.id, source.segments.length - 1);
