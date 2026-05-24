@@ -1,5 +1,5 @@
 import { Server, type Socket } from "socket.io";
-import { directionToVector, Direction } from "../shared/model.js";
+import { coordToUint16, directionToVector, Direction, gameStatePacket, gameTailPacket } from "../shared/model.js";
 import type { Point, Segment, PlayerInfo, GameSettings } from "../shared/model.js";
 
 interface Player {
@@ -52,8 +52,10 @@ export class Game {
     private static readonly defaultMoveSpeed = 0.3;
     private static readonly defaultLineWidth = 0.002;
     private static readonly defaultAspectRatio = 1.5;
+    private static readonly countdownDuration = 3000;
 
     private playing: boolean = false;
+    private roundStartTime: number | null = null;
     private prevAlive: string[] = []; // list of ids of players that were alive last tick
     private nextPlayerIndex: number = 0;
 
@@ -184,7 +186,7 @@ export class Game {
     }
 
     startRound() {
-        if (this.playing || this.players.size < 2) {
+        if (this.playing || this.roundStartTime !== null || this.players.size < 2) {
             return;
         }
         for (const player of this.players.values()) {
@@ -215,23 +217,12 @@ export class Game {
         }
 
         this.server.emit("starting");
-        for (const player of this.players.values()) {
-            this.sendGameState(player, undefined, true);
+        for (const receiver of this.players.values()) {
+            this.sendGameState(receiver);
         }
 
         this.prevAlive = Array.from(this.players.keys());
-        setTimeout(() => {
-            for (const player of this.players.values()) {
-                if (player.startingDirection !== null) {
-                    player.direction = player.startingDirection;
-                    const directionVector = directionToVector(player.direction);
-                    const startPoint = player.segments[0][0];
-                    const endPoint: Point = [ startPoint[0] + directionVector[0] * this.lineWidth, startPoint[1] + directionVector[1] * this.lineWidth ];
-                    player.segments = [[ startPoint, endPoint ] as Segment];
-                }
-            }
-            this.playing = true;
-        }, 3000);
+        this.roundStartTime = Date.now() + Game.countdownDuration;
     }
 
     addPlayer(socket: Socket, id: string, name: string, color: string) {
@@ -285,7 +276,7 @@ export class Game {
                 color: player.color,
                 score: player.score
             } as PlayerInfo);
-            this.sendGameState(this.players.get(id)!, [player], true);
+            this.sendGameState(this.players.get(id)!, [player]);
         }
     }
 
@@ -439,7 +430,7 @@ export class Game {
         }
     }
 
-    private sendGameState(receiver: Player, sources?: Player[], reliable: boolean = false) {
+    private sendGameState(receiver: Player, sources?: Iterable<Player>) {
         const playerData: { index: number; startIndex: number; segments: Segment[] }[] = [];
         let totalSegments = 0;
 
@@ -455,35 +446,65 @@ export class Game {
 
         if (playerData.length === 0) return;
 
-        const headerSize = 1 + playerData.length * 7;
-        const buffer = new ArrayBuffer(headerSize + totalSegments * 16);
+        const headerSize = gameStatePacket.playerCountBytes + playerData.length * gameStatePacket.playerHeaderBytes;
+        const buffer = new ArrayBuffer(headerSize + totalSegments * gameStatePacket.segmentBytes);
         const view = new DataView(buffer);
 
-        view.setUint8(0, playerData.length);
+        view.setUint8(gameStatePacket.playerCountOffset, playerData.length);
 
-        let offset = 1;
-        let floatOffset = headerSize;
+        let offset = gameStatePacket.playerCountBytes;
+        let segmentOffset = headerSize;
 
         for (const { index, startIndex, segments } of playerData) {
-            view.setUint8(offset, index);
-            view.setUint32(offset + 1, startIndex, true);
-            view.setUint16(offset + 5, segments.length, true);
-            offset += 7;
+            view.setUint8(offset + gameStatePacket.playerIndexOffset, index);
+            view.setUint32(offset + gameStatePacket.playerStartIndexOffset, startIndex, true);
+            view.setUint16(offset + gameStatePacket.playerSegmentCountOffset, segments.length, true);
+            offset += gameStatePacket.playerHeaderBytes;
 
-            for (let i = 0; i < segments.length; i++) {
-                view.setFloat32(floatOffset, segments[i][0][0], true);
-                view.setFloat32(floatOffset + 4, segments[i][0][1], true);
-                view.setFloat32(floatOffset + 8, segments[i][1][0], true);
-                view.setFloat32(floatOffset + 12, segments[i][1][1], true);
-                floatOffset += 16;
+            for (const segment of segments) {
+                view.setUint16(segmentOffset + gameStatePacket.segmentStartXOffset, coordToUint16(segment[0][0], -this.aspectRatio, this.aspectRatio), true);
+                view.setUint16(segmentOffset + gameStatePacket.segmentStartYOffset, coordToUint16(segment[0][1], -1.0, 1.0), true);
+                view.setUint16(segmentOffset + gameStatePacket.segmentEndXOffset, coordToUint16(segment[1][0], -this.aspectRatio, this.aspectRatio), true);
+                view.setUint16(segmentOffset + gameStatePacket.segmentEndYOffset, coordToUint16(segment[1][1], -1.0, 1.0), true);
+                segmentOffset += gameStatePacket.segmentBytes;
             }
         }
 
-        if (reliable) {
-            receiver.socket.emit("game_state", buffer);
-        } else {
-            receiver.socket.volatile.emit("game_state", buffer);
+        receiver.socket.emit("game_state", buffer);
+    }
+
+    private sendGameTail(receiver: Player) {
+        const playerData: { index: number; segmentIndex: number; end: Point }[] = [];
+
+        for (const source of this.players.values()) {
+            if (source.dead || source.segments.length === 0) {
+                continue;
+            }
+            const segmentIndex = source.segments.length - 1;
+            playerData.push({
+                index: source.index,
+                segmentIndex,
+                end: source.segments[segmentIndex][1]
+            });
         }
+
+        if (playerData.length === 0) return;
+
+        const buffer = new ArrayBuffer(gameTailPacket.playerCountBytes + playerData.length * gameTailPacket.playerBytes);
+        const view = new DataView(buffer);
+
+        view.setUint8(gameTailPacket.playerCountOffset, playerData.length);
+
+        let offset = gameTailPacket.playerCountBytes;
+        for (const { index, segmentIndex, end } of playerData) {
+            view.setUint8(offset + gameTailPacket.playerIndexOffset, index);
+            view.setUint32(offset + gameTailPacket.playerSegmentIndexOffset, segmentIndex, true);
+            view.setUint16(offset + gameTailPacket.playerEndXOffset, coordToUint16(end[0], -this.aspectRatio, this.aspectRatio), true);
+            view.setUint16(offset + gameTailPacket.playerEndYOffset, coordToUint16(end[1], -1.0, 1.0), true);
+            offset += gameTailPacket.playerBytes;
+        }
+
+        receiver.socket.volatile.emit("game_tail", buffer);
     }
 
     private processSubTick() {
@@ -497,7 +518,26 @@ export class Game {
         return alive;
     }
 
+    private beginPlaying() {
+        for (const player of this.players.values()) {
+            if (player.startingDirection !== null) {
+                player.direction = player.startingDirection;
+                const directionVector = directionToVector(player.direction);
+                const startPoint = player.segments[0][0];
+                const endPoint: Point = [ startPoint[0] + directionVector[0] * this.lineWidth, startPoint[1] + directionVector[1] * this.lineWidth ];
+                player.segments = [[ startPoint, endPoint ] as Segment];
+                this.resetSentSegments(player);
+            }
+        }
+        this.roundStartTime = null;
+        this.playing = true;
+    }
+
     private gameLoop() {
+        if (this.roundStartTime !== null && Date.now() >= this.roundStartTime) {
+            this.beginPlaying();
+        }
+
         if (!this.playing) {
             return;
         }
@@ -525,7 +565,7 @@ export class Game {
                 for (const player of this.players.values()) {
                     player.startingDirection = null;
                     player.pendingReliableState = false;
-                    this.sendGameState(player, undefined, true);
+                    this.sendGameState(player);
                 }
 
                 this.prevAlive = alive;
@@ -534,10 +574,15 @@ export class Game {
             this.prevAlive = alive;
         }
 
-        const reliable = Array.from(this.players.values()).some(player => player.pendingReliableState);
-        for (const player of this.players.values()) {
-            player.startingDirection = null;
-            this.sendGameState(player, undefined, reliable);
+        const reliableSources = Array.from(this.players.values()).filter(player => player.pendingReliableState);
+        for (const receiver of this.players.values()) {
+            receiver.startingDirection = null;
+            if (reliableSources.length > 0) {
+                this.sendGameState(receiver, reliableSources);
+            }
+            this.sendGameTail(receiver);
+        }
+        for (const player of reliableSources) {
             player.pendingReliableState = false;
         }
     }

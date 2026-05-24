@@ -128,9 +128,6 @@ io.on("connection", (socket) => {
         game.startRound();
     })
 
-    socket.on("heartbeat", () => {
-        session.pendingDeletion = false;
-    })
 })
 
 http.listen(port, () => {

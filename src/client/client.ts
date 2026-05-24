@@ -111,15 +111,7 @@ socket.on("session", (sessionID: string) => {
     socket.connect();
 })
 
-let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-
 socket.on("connect", () => {
-    if (heartbeatInterval === null) {
-        heartbeatInterval = setInterval(() => {
-            socket.emit("heartbeat");
-        }, 1000);
-    }
-
     document.getElementById("join-data")?.remove();
     socket.emit("join");
     inputManager.start();
@@ -144,6 +136,10 @@ socket.on("connect_error", err => {
 
 socket.on("game_state", (buffer: ArrayBuffer) => {
     renderer.updateGameState(buffer);
+})
+
+socket.on("game_tail", (buffer: ArrayBuffer) => {
+    renderer.updateGameTail(buffer);
 })
 
 socket.on("modify_player", (playerInfo: PlayerInfo) => {

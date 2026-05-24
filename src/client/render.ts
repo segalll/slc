@@ -1,3 +1,4 @@
+import { gameStatePacket, gameTailPacket, uint16ToCoord } from "../shared/model";
 import type { GameSettings, PlayerInfo, Segment } from "../shared/model";
 
 interface Player {
@@ -293,45 +294,100 @@ export class Renderer {
     }
 
     updateGameState(buffer: ArrayBuffer) {
-        const view = new DataView(buffer);
-        const numPlayers = view.getUint8(0);
+        if (buffer.byteLength < gameStatePacket.playerCountBytes) {
+            return;
+        }
 
-        let offset = 1;
-        let floatOffset = 1 + numPlayers * 7;
+        const view = new DataView(buffer);
+        const numPlayers = view.getUint8(gameStatePacket.playerCountOffset);
+        const headerSize = gameStatePacket.playerCountBytes + numPlayers * gameStatePacket.playerHeaderBytes;
+        if (buffer.byteLength < headerSize) {
+            return;
+        }
+
+        let offset = gameStatePacket.playerCountBytes;
+        let segmentOffset = headerSize;
 
         for (let p = 0; p < numPlayers; p++) {
-            const playerIndex = view.getUint8(offset);
-            const startIndex = view.getUint32(offset + 1, true);
-            const numSegments = view.getUint16(offset + 5, true);
-            offset += 7;
+            const playerIndex = view.getUint8(offset + gameStatePacket.playerIndexOffset);
+            const startIndex = view.getUint32(offset + gameStatePacket.playerStartIndexOffset, true);
+            const numSegments = view.getUint16(offset + gameStatePacket.playerSegmentCountOffset, true);
+            offset += gameStatePacket.playerHeaderBytes;
+
+            const segmentBytes = numSegments * gameStatePacket.segmentBytes;
+            if (segmentOffset + segmentBytes > buffer.byteLength) {
+                return;
+            }
 
             const playerId = this.indexToId.get(playerIndex);
             if (!playerId || !this.players.has(playerId)) {
-                floatOffset += numSegments * 16;
+                segmentOffset += segmentBytes;
                 continue;
             }
 
             const player = this.players.get(playerId)!;
+            if (startIndex > player.segments.length) {
+                segmentOffset += segmentBytes;
+                continue;
+            }
+
             const segments: Segment[] = [];
 
             if (this.inCountdown && player.spawnPosition === null && numSegments > 0) {
                 player.spawnPosition = [
-                    view.getFloat32(floatOffset, true),
-                    view.getFloat32(floatOffset + 4, true)
+                    uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartXOffset, true), -this.aspectRatio, this.aspectRatio),
+                    uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartYOffset, true), -1.0, 1.0)
                 ];
             }
 
             for (let i = 0; i < numSegments; i++) {
-                const p1x = view.getFloat32(floatOffset, true);
-                const p1y = view.getFloat32(floatOffset + 4, true);
-                const p2x = view.getFloat32(floatOffset + 8, true);
-                const p2y = view.getFloat32(floatOffset + 12, true);
-                floatOffset += 16;
+                const p1x = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartXOffset, true), -this.aspectRatio, this.aspectRatio);
+                const p1y = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartYOffset, true), -1.0, 1.0);
+                const p2x = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentEndXOffset, true), -this.aspectRatio, this.aspectRatio);
+                const p2y = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentEndYOffset, true), -1.0, 1.0);
+                segmentOffset += gameStatePacket.segmentBytes;
                 segments.push([[p1x, p1y], [p2x, p2y]]);
             }
 
             player.segments.splice(startIndex, player.segments.length - startIndex, ...segments);
             this.uploadPlayerSegments(player, startIndex);
+        }
+    }
+
+    updateGameTail(buffer: ArrayBuffer) {
+        if (buffer.byteLength < gameTailPacket.playerCountBytes) {
+            return;
+        }
+
+        const view = new DataView(buffer);
+        const numPlayers = view.getUint8(gameTailPacket.playerCountOffset);
+        const expectedBytes = gameTailPacket.playerCountBytes + numPlayers * gameTailPacket.playerBytes;
+        if (buffer.byteLength < expectedBytes) {
+            return;
+        }
+
+        let offset = gameTailPacket.playerCountBytes;
+        for (let p = 0; p < numPlayers; p++) {
+            const playerIndex = view.getUint8(offset + gameTailPacket.playerIndexOffset);
+            const segmentIndex = view.getUint32(offset + gameTailPacket.playerSegmentIndexOffset, true);
+            const end: [number, number] = [
+                uint16ToCoord(view.getUint16(offset + gameTailPacket.playerEndXOffset, true), -this.aspectRatio, this.aspectRatio),
+                uint16ToCoord(view.getUint16(offset + gameTailPacket.playerEndYOffset, true), -1.0, 1.0)
+            ];
+            offset += gameTailPacket.playerBytes;
+
+            const playerId = this.indexToId.get(playerIndex);
+            if (!playerId || !this.players.has(playerId)) {
+                continue;
+            }
+
+            const player = this.players.get(playerId)!;
+            if (segmentIndex !== player.segments.length - 1) {
+                continue;
+            }
+
+            player.segments[segmentIndex][1] = end;
+            this.uploadPlayerSegments(player, segmentIndex);
         }
     }
     

@@ -2,6 +2,41 @@ export type Point = [x: number, y: number];
 
 export type Segment = [Point, Point];
 
+export const gameStatePacket = {
+    playerCountOffset: 0,
+    playerCountBytes: 1,
+    playerIndexOffset: 0,
+    playerStartIndexOffset: 1,
+    playerSegmentCountOffset: 5,
+    playerHeaderBytes: 7,
+    segmentStartXOffset: 0,
+    segmentStartYOffset: 2,
+    segmentEndXOffset: 4,
+    segmentEndYOffset: 6,
+    segmentBytes: 8
+} as const;
+
+export const gameTailPacket = {
+    playerCountOffset: 0,
+    playerCountBytes: 1,
+    playerIndexOffset: 0,
+    playerSegmentIndexOffset: 1,
+    playerEndXOffset: 5,
+    playerEndYOffset: 7,
+    playerBytes: 9
+} as const;
+
+const uint16Max = 0xffff;
+
+export const coordToUint16 = (value: number, min: number, max: number) => {
+    const clamped = Math.min(Math.max(value, min), max);
+    return Math.round(((clamped - min) / (max - min)) * uint16Max);
+}
+
+export const uint16ToCoord = (value: number, min: number, max: number) => {
+    return min + (value / uint16Max) * (max - min);
+}
+
 export interface PlayerInfo {
     id: string;
     index: number;
