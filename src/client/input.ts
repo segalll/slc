@@ -1,11 +1,12 @@
-import { Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
 import { Direction } from "../shared/model";
 
 export class InputManager {
-    socket: Socket;
-    keyMap: Map<string, Direction>;
-    startX: number = 0;
-    startY: number = 0;
+    private socket: Socket;
+    private keyMap: Map<string, Direction>;
+    private startX: number = 0;
+    private startY: number = 0;
+    private started: boolean = false;
 
     constructor(socket: Socket) {
         this.socket = socket;
@@ -53,6 +54,10 @@ export class InputManager {
     }
 
     start() {
+        if (this.started) {
+            return;
+        }
+        this.started = true;
         document.addEventListener('keydown', this.onKeyDown.bind(this));
         document.addEventListener('touchstart', this.onTouchStart.bind(this));
         document.addEventListener('touchend', this.onTouchEnd.bind(this));

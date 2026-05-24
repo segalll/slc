@@ -1,5 +1,5 @@
-import { Socket } from "socket.io-client";
-import { GameSettings, PlayerInfo } from "../shared/model";
+import type { Socket } from "socket.io-client";
+import type { GameSettings, PlayerInfo } from "../shared/model";
 
 interface Player {
     id: string;
@@ -25,26 +25,27 @@ const ortho = (left: number, right: number, bottom: number, top: number, near: n
 }
 
 export class Renderer {
-    socket: Socket;
-    gl: WebGL2RenderingContext;
-    playerProgram: WebGLProgram;
-    mvpUbo: WebGLBuffer;
-    colorUniform: WebGLUniformLocation;
+    private socket: Socket;
+    private gl: WebGL2RenderingContext;
+    private playerProgram: WebGLProgram;
+    private mvpUbo: WebGLBuffer;
+    private colorUniform: WebGLUniformLocation;
 
-    players: Map<string, Player>;
-    indexToId: Map<number, string>;
+    private players: Map<string, Player>;
+    private indexToId: Map<number, string>;
 
-    aspectRatio: number;
-    lineWidth: number = 0.002;
+    private aspectRatio: number;
+    private lineWidth: number = 0.002;
 
-    pendingRedraw: boolean;
-    inCountdown: boolean = false;
-    countdownTimeout: ReturnType<typeof setTimeout> | null = null;
+    private pendingRedraw: boolean;
+    private renderLoopStarted: boolean = false;
+    private inCountdown: boolean = false;
+    private countdownTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    indicatorVao: WebGLVertexArrayObject;
-    indicatorVbo: WebGLBuffer;
+    private indicatorVao: WebGLVertexArrayObject;
+    private indicatorVbo: WebGLBuffer;
 
-    namesElement: HTMLElement;
+    private namesElement: HTMLElement;
 
     constructor(socket: Socket, aspectRatio: number) {
         const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -144,11 +145,11 @@ export class Renderer {
             }
         }
         this.players.delete(id);
-        this.namesElement.removeChild(document.getElementById(id)!);
+        document.getElementById(id)?.remove();
         this.pendingRedraw = true;
     }
 
-    resize() {
+    private resize() {
         const newWidth = window.innerWidth - 4;
         const newHeight = window.innerHeight - document.getElementById("names")!.clientHeight - 8;
 
@@ -302,6 +303,14 @@ export class Renderer {
     }
     
     renderLoop() {
+        if (this.renderLoopStarted) {
+            return;
+        }
+        this.renderLoopStarted = true;
+        this.renderFrame();
+    }
+
+    private renderFrame() {
         this.resize();
 
         if (this.pendingRedraw) {
@@ -326,7 +335,7 @@ export class Renderer {
             this.renderSpawnIndicators();
         }
 
-        requestAnimationFrame(() => this.renderLoop());
+        requestAnimationFrame(() => this.renderFrame());
     }
 
     private renderSpawnIndicators() {

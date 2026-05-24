@@ -8,8 +8,9 @@
     "clean": "rm -rf build dist",
     "dist": "mkdir -p dist && cp -R src/client/index.html src/client/css src/client/snd dist",
     "bundle": "esbuild src/client/client.ts --bundle --minify --outfile=dist/client.js",
-    "build": "npm run clean && tsc && npm run dist && npm run bundle",
-    "build:dev": "npm run clean && tsc --sourceMap && npm run dist && npm run bundle -- --sourcemap",
+    "typecheck:client": "tsc -p tsconfig.client.json --noEmit",
+    "build": "npm run clean && tsc && npm run typecheck:client && npm run dist && npm run bundle",
+    "build:dev": "npm run clean && tsc --sourceMap && npm run typecheck:client && npm run dist && npm run bundle -- --sourcemap",
     "start": "node build/server/server.js",
     "dev": "npm run build:dev && (tsc --watch --preserveWatchOutput & npm run bundle -- --watch & node --watch-path=build build/server/server.js)",
     "prod": "npm run build && npm run start"

@@ -2,15 +2,6 @@ export type Point = [x: number, y: number];
 
 export type Segment = [Point, Point];
 
-export interface GameState {
-    players: PlayerState[];
-}
-
-export interface PlayerState {
-    id: string;
-    missingSegments: Segment[];
-}
-
 export interface PlayerInfo {
     id: string;
     index: number;
@@ -26,24 +17,8 @@ export enum Direction {
     Left
 }
 
-export interface DirectionInput {
-    direction: Direction;
-    receivedTimestamp: number;
-}
-
-export const oppositeDirection = (direction: Direction | null) => {
-    switch (direction) {
-        case Direction.Up:
-            return Direction.Down;
-        case Direction.Right:
-            return Direction.Left;
-        case Direction.Down:
-            return Direction.Up;
-        case Direction.Left:
-            return Direction.Right;
-        default:
-            return null;
-    }
+export const isDirection = (value: unknown): value is Direction => {
+    return typeof value === "number" && Number.isInteger(value) && value >= Direction.Up && value <= Direction.Left;
 }
 
 export const directionToVector = (direction: Direction): [number, number] => {

@@ -1,7 +1,7 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
 import { InputManager } from "./input";
-import { GameSettings, PlayerInfo } from "../shared/model";
+import type { GameSettings, PlayerInfo } from "../shared/model";
 
 const socket = io(window.location.toString(), {
     autoConnect: false,

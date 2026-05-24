@@ -1,4 +1,4 @@
-import { Server, Socket } from "socket.io";
+import { Server, type Socket } from "socket.io";
 import { directionToVector, Direction } from "../shared/model.js";
 import type { Point, Segment, PlayerInfo, GameSettings } from "../shared/model.js";
 
@@ -18,6 +18,17 @@ interface Player {
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
     pendingRedraw: boolean;
+    pendingReliableState: boolean;
+}
+
+const settingLimits = {
+    moveSpeed: { min: 0.1, max: 2.0 },
+    lineWidth: { min: 0.001, max: 0.02 },
+    aspectRatio: { min: 0.2, max: 5.0 }
+} as const;
+
+const isNumberInRange = (value: number, limit: { readonly min: number; readonly max: number }) => {
+    return typeof value === "number" && Number.isFinite(value) && value >= limit.min && value <= limit.max;
 }
 
 const colorFromHex = (hex: string): [number, number, number] => {
@@ -28,24 +39,24 @@ const colorFromHex = (hex: string): [number, number, number] => {
 }
 
 export class Game {
-    server: Server;
-    players: Map<string, Player>;
+    private server: Server;
+    private players: Map<string, Player>;
 
-    numPartitions: number = 10; // number of partitions per axis
-    moveSpeed: number = 0.3;
-    tickRate: number = 30;
-    subTickRate: number = 5;
-    aspectRatio: number = 1.5;
-    lineWidth: number = 0.002;
-    minSpawnDistanceFromEdge: number = 0.1;
+    private numPartitions: number = 10; // number of partitions per axis
+    private moveSpeed: number = 0.3;
+    private tickRate: number = 30;
+    private subTickRate: number = 5;
+    private aspectRatio: number = 1.5;
+    private lineWidth: number = 0.002;
+    private minSpawnDistanceFromEdge: number = 0.1;
 
-    static readonly defaultMoveSpeed = 0.3;
-    static readonly defaultLineWidth = 0.002;
-    static readonly defaultAspectRatio = 1.5;
+    private static readonly defaultMoveSpeed = 0.3;
+    private static readonly defaultLineWidth = 0.002;
+    private static readonly defaultAspectRatio = 1.5;
 
-    playing: boolean = false;
-    prevAlive: string[] = []; // list of ids of players that were alive last tick
-    nextPlayerIndex: number = 0;
+    private playing: boolean = false;
+    private prevAlive: string[] = []; // list of ids of players that were alive last tick
+    private nextPlayerIndex: number = 0;
 
     constructor(server: Server) {
         this.server = server;
@@ -53,21 +64,43 @@ export class Game {
         setInterval(() => this.gameLoop(), 1000 / this.tickRate);
     }
 
-    updateSettings(settings: Partial<GameSettings>) {
-        if (settings.moveSpeed !== undefined) {
-            this.moveSpeed = settings.moveSpeed;
-        }
-        if (settings.lineWidth !== undefined) {
-            this.lineWidth = settings.lineWidth;
-        }
-        if (settings.aspectRatio !== undefined) {
-            this.aspectRatio = settings.aspectRatio;
-        }
-        this.server.emit("game_settings", {
+    getSettings(): GameSettings {
+        return {
             aspectRatio: this.aspectRatio,
             lineWidth: this.lineWidth,
             moveSpeed: this.moveSpeed
-        } as GameSettings);
+        };
+    }
+
+    updateSettings(settings: Partial<GameSettings>) {
+        let moveSpeed = this.moveSpeed;
+        let lineWidth = this.lineWidth;
+        let aspectRatio = this.aspectRatio;
+        let changed = false;
+
+        if (settings.moveSpeed !== undefined) {
+            if (!isNumberInRange(settings.moveSpeed, settingLimits.moveSpeed)) return;
+            moveSpeed = settings.moveSpeed;
+            changed = true;
+        }
+        if (settings.lineWidth !== undefined) {
+            if (!isNumberInRange(settings.lineWidth, settingLimits.lineWidth)) return;
+            lineWidth = settings.lineWidth;
+            changed = true;
+        }
+        if (settings.aspectRatio !== undefined) {
+            if (!isNumberInRange(settings.aspectRatio, settingLimits.aspectRatio)) return;
+            aspectRatio = settings.aspectRatio;
+            changed = true;
+        }
+        if (!changed) {
+            return;
+        }
+
+        this.moveSpeed = moveSpeed;
+        this.lineWidth = lineWidth;
+        this.aspectRatio = aspectRatio;
+        this.server.emit("game_settings", this.getSettings());
     }
 
     private segmentToPartitions(segment: Segment): number[] {
@@ -77,23 +110,29 @@ export class Game {
         const y1 = (segment[0][1] + 1.0) / partitionSizeY;
         const x2 = (segment[1][0] + this.aspectRatio) / partitionSizeX;
         const y2 = (segment[1][1] + 1.0) / partitionSizeY;
-        const partitions: number[] = [];
+        const partitions = new Set<number>();
+        const addPartition = (x: number, y: number) => {
+            if (x >= 0 && x < this.numPartitions && y >= 0 && y < this.numPartitions) {
+                partitions.add(y * this.numPartitions + x);
+            }
+        }
+
         if (x1 === x2) {
             const width = this.lineWidth / partitionSizeX;
             for (let y = Math.floor(Math.min(y1, y2)); y <= Math.floor(Math.max(y1, y2)); y++) {
                 for (let x = Math.floor(Math.min(x1, x2) - width); x <= Math.floor(Math.max(x1, x2) + width); x++) {
-                    partitions.push(y * this.numPartitions + x);
+                    addPartition(x, y);
                 }
             }
         } else if (y1 === y2) {
             const width = this.lineWidth / partitionSizeY;
             for (let x = Math.floor(Math.min(x1, x2)); x <= Math.floor(Math.max(x1, x2)); x++) {
                 for (let y = Math.floor(Math.min(y1, y2) - width); y <= Math.floor(Math.max(y1, y2) + width); y++) {
-                    partitions.push(y * this.numPartitions + x);
+                    addPartition(x, y);
                 }
             }
         }
-        return partitions;
+        return [...partitions];
     }
 
     private lineToLineCollision(line1: Segment, line2: Segment): [Point | null, Point | null] {
@@ -169,6 +208,7 @@ export class Game {
             }
 
             player.dead = false;
+            player.pendingReliableState = false;
 
             for (const id of this.players.keys()) {
                 player.lastSentSegmentIndices.set(id, 0);
@@ -227,7 +267,8 @@ export class Game {
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
-                pendingRedraw: false
+                pendingRedraw: false,
+                pendingReliableState: false
             });
         } else {
             this.players.get(id)!.socket = socket;
@@ -242,7 +283,7 @@ export class Game {
                 color: player.color,
                 score: player.score
             } as PlayerInfo);
-            this.sendGameState(this.players.get(id)!, [player]);
+            this.sendGameState(this.players.get(id)!, [player], true);
         }
     }
 
@@ -302,8 +343,10 @@ export class Game {
         }
 
         player.direction = direction;
+        player.pendingReliableState = true;
 
-        const newPoint: Point = structuredClone(player.segments[player.segments.length - 1][1]);
+        const lastEnd = player.segments[player.segments.length - 1][1];
+        const newPoint: Point = [lastEnd[0], lastEnd[1]];
         switch (direction) {
             case Direction.Left:
                 newPoint[0] -= this.lineWidth;
@@ -322,7 +365,7 @@ export class Game {
                 newPoint[0] -= lastDirection[0] * this.lineWidth;
                 break;
         }
-        player.segments.push([ newPoint, structuredClone(newPoint) ] as Segment);
+        player.segments.push([ newPoint, [newPoint[0], newPoint[1]] ] as Segment);
     }
 
     private extendLastSegment(player: Player, duration: number) {
@@ -333,28 +376,32 @@ export class Game {
         const lastSegment = player.segments[player.segments.length - 1];
         const direction = directionToVector(player.direction);
         const spatialLength = duration * this.moveSpeed / 1000;
-        const oldSegmentEnd = structuredClone(lastSegment[1]);
+        const oldSegmentEnd: Point = [lastSegment[1][0], lastSegment[1][1]];
         lastSegment[1][0] += direction[0] * spatialLength;
         lastSegment[1][1] += direction[1] * spatialLength;
 
         if (lastSegment[1][0] < -this.aspectRatio) {
             lastSegment[1][0] = -this.aspectRatio;
             player.dead = true;
+            player.pendingReliableState = true;
             return;
         }
         if (lastSegment[1][0] > this.aspectRatio) {
             lastSegment[1][0] = this.aspectRatio;
             player.dead = true;
+            player.pendingReliableState = true;
             return;
         }
         if (lastSegment[1][1] < -1.0) {
             lastSegment[1][1] = -1.0;
             player.dead = true;
+            player.pendingReliableState = true;
             return;
         }
         if (lastSegment[1][1] > 1.0) {
             lastSegment[1][1] = 1.0;
             player.dead = true;
+            player.pendingReliableState = true;
             return;
         }
 
@@ -390,6 +437,7 @@ export class Game {
 
         if (closestCollision) {
             player.dead = true;
+            player.pendingReliableState = true;
             lastSegment[1] = closestCollision;
         }
     }
@@ -451,12 +499,12 @@ export class Game {
         return alive;
     }
 
-    gameLoop() {
+    private gameLoop() {
         if (!this.playing) {
             for (const player of this.players.values()) {
                 if (player.pendingRedraw) {
                     player.pendingRedraw = false;
-                    this.sendGameState(player);
+                    this.sendGameState(player, undefined, true);
                 }
             }
             return;
@@ -467,11 +515,13 @@ export class Game {
             if (alive.length <= 1) {
                 this.playing = false;
 
-                const winners = alive.length === 1 ? alive : this.prevAlive;
+                const winners = (alive.length === 1 ? alive : this.prevAlive).filter(id => this.players.has(id));
+                if (winners.length > 0) {
+                    this.server.emit("round_over");
+                }
                 for (const id of winners) {
                     const player = this.players.get(id)!;
                     player.score++;
-                    this.server.emit("round_over");
                     this.server.emit("modify_player", {
                         id,
                         index: player.index,
@@ -481,19 +531,24 @@ export class Game {
                     } as PlayerInfo);
                 }
                 for (const player of this.players.values()) {
+                    player.pendingRedraw = false;
+                    player.startingDirection = null;
+                    player.pendingReliableState = false;
                     this.sendGameState(player, undefined, true);
                 }
 
                 this.prevAlive = alive;
-                break;
+                return;
             }
             this.prevAlive = alive;
         }
 
+        const reliable = Array.from(this.players.values()).some(player => player.pendingReliableState);
         for (const player of this.players.values()) {
             player.pendingRedraw = false;
             player.startingDirection = null;
-            this.sendGameState(player);
+            this.sendGameState(player, undefined, reliable);
+            player.pendingReliableState = false;
         }
     }
 }
