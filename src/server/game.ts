@@ -43,8 +43,8 @@ export class Game {
 
     private numPartitions: number = 10; // number of partitions per axis
     private moveSpeed: number = 0.3;
-    private tickRate: number = 30;
-    private subTickRate: number = 5;
+    private tickRate: number = 60;
+    private subTickRate: number = 3;
     private aspectRatio: number = 1.5;
     private lineWidth: number = 0.002;
     private minSpawnDistanceFromEdge: number = 0.1;
