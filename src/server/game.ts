@@ -136,6 +136,34 @@ export class Game {
         return [...partitions];
     }
 
+    private createPartitionGrid() {
+        const partitions = new Array<Set<number>>(this.numPartitions * this.numPartitions);
+        for (let i = 0; i < partitions.length; i++) {
+            partitions[i] = new Set<number>();
+        }
+        return partitions;
+    }
+
+    private addSegmentToPartitions(partitions: Set<number>[], segmentIndex: number, segment: Segment) {
+        for (const partition of this.segmentToPartitions(segment)) {
+            partitions[partition].add(segmentIndex);
+        }
+    }
+
+    private getSpawnPoint(): Point {
+        const startX = Math.random() * 2 * (this.aspectRatio - this.minSpawnDistanceFromEdge) - this.aspectRatio + this.minSpawnDistanceFromEdge;
+        const startY = Math.random() * 2 * (1.0 - this.minSpawnDistanceFromEdge) - 1.0 + this.minSpawnDistanceFromEdge;
+        return [ startX, startY ];
+    }
+
+    private getBoundaryCollision(_oldEnd: Point, newEnd: Point): Point | null {
+        if (newEnd[0] < -this.aspectRatio) return [ -this.aspectRatio, newEnd[1] ];
+        if (newEnd[0] > this.aspectRatio) return [ this.aspectRatio, newEnd[1] ];
+        if (newEnd[1] < -1.0) return [ newEnd[0], -1.0 ];
+        if (newEnd[1] > 1.0) return [ newEnd[0], 1.0 ];
+        return null;
+    }
+
     private lineToLineCollision(line1: Segment, line2: Segment): [Point | null, Point | null] {
         const lineWidth = this.lineWidth;
 
@@ -185,14 +213,41 @@ export class Game {
         }
     }
 
+    private getClosestTrailCollision(player: Player, oldSegmentEnd: Point, newSegmentEnd: Point, partitions: number[]): Point | null {
+        const consideredSegment = [ oldSegmentEnd, newSegmentEnd ] as Segment;
+        let closestCollision: Point | null = null;
+        let closestDistSq = Infinity;
+
+        for (const partition of partitions) {
+            for (const player2 of this.players.values()) {
+                for (const segmentIndex of player2.fieldPartitions[partition]) {
+                    if (player.id === player2.id && (player.segments.length - 1) - segmentIndex < 2) {
+                        continue;
+                    }
+
+                    const [collisionStart, collisionEnd] = this.lineToLineCollision(consideredSegment, player2.segments[segmentIndex]);
+                    if (collisionStart && collisionEnd) {
+                        const dx = collisionStart[0] - oldSegmentEnd[0];
+                        const dy = collisionStart[1] - oldSegmentEnd[1];
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq < closestDistSq) {
+                            closestDistSq = distSq;
+                            closestCollision = collisionStart;
+                        }
+                    }
+                }
+            }
+        }
+
+        return closestCollision;
+    }
+
     startRound() {
         if (this.playing || this.roundStartTime !== null || this.players.size < 2) {
             return;
         }
         for (const player of this.players.values()) {
-            const startX = Math.random() * 2 * (this.aspectRatio - this.minSpawnDistanceFromEdge) - this.aspectRatio + this.minSpawnDistanceFromEdge;
-            const startY = Math.random() * 2 * (1.0 - this.minSpawnDistanceFromEdge) - 1.0 + this.minSpawnDistanceFromEdge;
-            const startPoint: Point = [ startX, startY ];
+            const startPoint = this.getSpawnPoint();
 
             player.direction = Math.floor(Math.random() * 4);
             const directionVector = directionToVector(player.direction);
@@ -200,13 +255,8 @@ export class Game {
             const segment = [ startPoint, endPoint ] as Segment;
 
             player.segments = [segment];
-            player.fieldPartitions = new Array<Set<number>>(this.numPartitions * this.numPartitions);
-            for (let i = 0; i < player.fieldPartitions.length; i++) {
-                player.fieldPartitions[i] = new Set<number>();
-            }
-            for (const partition of this.segmentToPartitions(segment)) {
-                player.fieldPartitions[partition].add(0);
-            }
+            player.fieldPartitions = this.createPartitionGrid();
+            this.addSegmentToPartitions(player.fieldPartitions, 0, segment);
 
             player.dead = false;
             player.pendingReliableState = false;
@@ -244,10 +294,7 @@ export class Game {
                 score
             } as PlayerInfo);
 
-            const fieldPartitions = new Array<Set<number>>(this.numPartitions * this.numPartitions);
-            for (let i = 0; i < fieldPartitions.length; i++) {
-                fieldPartitions[i] = new Set<number>();
-            }
+            const fieldPartitions = this.createPartitionGrid();
 
             this.players.set(id, {
                 id,
@@ -298,6 +345,7 @@ export class Game {
             this.moveSpeed = Game.defaultMoveSpeed;
             this.lineWidth = Game.defaultLineWidth;
             this.aspectRatio = Game.defaultAspectRatio;
+            this.nextPlayerIndex = 0;
         }
     }
 
@@ -383,26 +431,9 @@ export class Game {
         lastSegment[1][0] += direction[0] * spatialLength;
         lastSegment[1][1] += direction[1] * spatialLength;
 
-        if (lastSegment[1][0] < -this.aspectRatio) {
-            lastSegment[1][0] = -this.aspectRatio;
-            player.dead = true;
-            player.pendingReliableState = true;
-            return;
-        }
-        if (lastSegment[1][0] > this.aspectRatio) {
-            lastSegment[1][0] = this.aspectRatio;
-            player.dead = true;
-            player.pendingReliableState = true;
-            return;
-        }
-        if (lastSegment[1][1] < -1.0) {
-            lastSegment[1][1] = -1.0;
-            player.dead = true;
-            player.pendingReliableState = true;
-            return;
-        }
-        if (lastSegment[1][1] > 1.0) {
-            lastSegment[1][1] = 1.0;
+        const boundaryCollision = this.getBoundaryCollision(oldSegmentEnd, lastSegment[1]);
+        if (boundaryCollision) {
+            lastSegment[1] = boundaryCollision;
             player.dead = true;
             player.pendingReliableState = true;
             return;
@@ -413,31 +444,7 @@ export class Game {
             player.fieldPartitions[partition].add(player.segments.length - 1);
         }
 
-        let closestCollision: Point | null = null;
-        let closestDistSq = Infinity;
-
-        for (const partition of newPartitions) {
-            for (const player2 of this.players.values()) {
-                for (const segmentIndex of player2.fieldPartitions[partition]) {
-                    if (player.id === player2.id && (player.segments.length - 1) - segmentIndex < 2) {
-                        continue;
-                    }
-
-                    const consideredSegment = [ oldSegmentEnd, lastSegment[1] ] as Segment;
-                    const [collisionStart, collisionEnd] = this.lineToLineCollision(consideredSegment, player2.segments[segmentIndex]);
-                    if (collisionStart && collisionEnd) {
-                        const dx = collisionStart[0] - oldSegmentEnd[0];
-                        const dy = collisionStart[1] - oldSegmentEnd[1];
-                        const distSq = dx * dx + dy * dy;
-                        if (distSq < closestDistSq) {
-                            closestDistSq = distSq;
-                            closestCollision = collisionStart;
-                        }
-                    }
-                }
-            }
-        }
-
+        const closestCollision = this.getClosestTrailCollision(player, oldSegmentEnd, lastSegment[1], newPartitions);
         if (closestCollision) {
             player.dead = true;
             player.pendingReliableState = true;
