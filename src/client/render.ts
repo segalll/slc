@@ -1,5 +1,6 @@
-import { gameStatePacket, gameTailPacket, uint16ToCoord } from "../shared/model";
-import type { GameSettings, PlayerInfo, Segment } from "../shared/model";
+import { gameStatePacket, gameTailPacket, uint16ToCoord, worldStatePacket } from "../shared/model";
+import { buildFieldSegments, getPortalCapSegments, segmentToQuad } from "../shared/geometry";
+import type { FieldShape, GameSettings, PlayerInfo, Segment } from "../shared/model";
 
 interface Player {
     id: string;
@@ -14,8 +15,17 @@ interface Player {
 }
 
 const floatsPerSegment = 12;
+const floatsPerGlowSegment = 18;
 const verticesPerSegment = 6;
 const initialSegmentCapacity = 64;
+const neutralColor: [number, number, number] = [0.65, 0.65, 0.65];
+const portalGlowWidthScale = 16;
+const portalColors: [number, number, number][] = [
+    [0.0, 0.75, 1.0],
+    [1.0, 0.25, 0.85],
+    [0.25, 1.0, 0.45],
+    [1.0, 0.75, 0.2]
+];
 
 const ortho = (left: number, right: number, bottom: number, top: number, near: number, far: number) => {
     const lr = 1 / (left - right);
@@ -32,11 +42,31 @@ const ortho = (left: number, right: number, bottom: number, top: number, near: n
 export class Renderer {
     private gl: WebGL2RenderingContext;
     private playerProgram: WebGLProgram;
+    private portalGlowProgram: WebGLProgram;
     private mvpUbo: WebGLBuffer;
     private colorUniform: WebGLUniformLocation;
+    private alphaUniform: WebGLUniformLocation;
+    private portalGlowColorUniform: WebGLUniformLocation;
+    private portalGlowTimeUniform: WebGLUniformLocation;
+    private fieldVao: WebGLVertexArrayObject;
+    private fieldVbo: WebGLBuffer;
+    private worldVao: WebGLVertexArrayObject;
+    private worldVbo: WebGLBuffer;
+    private portalGlowVao: WebGLVertexArrayObject;
+    private portalGlowVbo: WebGLBuffer;
+    private portalVao: WebGLVertexArrayObject;
+    private portalVbo: WebGLBuffer;
+    private portalCapVao: WebGLVertexArrayObject;
+    private portalCapVbo: WebGLBuffer;
 
     private players: Map<string, Player>;
     private indexToId: Map<number, string>;
+    private fieldShape: FieldShape = "rectangle";
+    private fieldSegmentCount: number = 0;
+    private worldSegments: Segment[] = [];
+    private portalSegments: Segment[] = [];
+    private portalPairCount: number = 0;
+    private portalCapSegmentCount: number = 0;
 
     private aspectRatio: number;
     private lineWidth: number = 0.002;
@@ -54,6 +84,7 @@ export class Renderer {
     constructor(aspectRatio: number) {
         const canvas = document.getElementById('game') as HTMLCanvasElement;
         const gl = canvas.getContext('webgl2') as WebGL2RenderingContext;
+        this.gl = gl;
 
         const playerVertexShader = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
         gl.shaderSource(playerVertexShader,
@@ -76,9 +107,10 @@ export class Renderer {
             #pragma vscode_glsllint_stage: frag
             precision lowp float;
             uniform vec3 uColor;
+            uniform float uAlpha;
             out vec4 color;
             void main() {
-                color = vec4(uColor, 1);
+                color = vec4(uColor, uAlpha);
             }`
         );
         gl.compileShader(playerFragmentShader);
@@ -87,16 +119,66 @@ export class Renderer {
         gl.attachShader(this.playerProgram, playerFragmentShader);
         gl.linkProgram(this.playerProgram);
 
+        const portalGlowVertexShader = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
+        gl.shaderSource(portalGlowVertexShader,
+            `#version 300 es
+            #pragma vscode_glsllint_stage: vert
+            precision highp float;
+            layout(location = 0) in vec2 position;
+            layout(location = 1) in float glowDistance;
+            uniform MVP {
+                mat4 projection;
+            };
+            out float vGlowDistance;
+            void main() {
+                vGlowDistance = glowDistance;
+                gl_Position = projection * vec4(position, 0, 1);
+            }`
+        );
+        gl.compileShader(portalGlowVertexShader);
+
+        const portalGlowFragmentShader = gl.createShader(gl.FRAGMENT_SHADER) as WebGLShader;
+        gl.shaderSource(portalGlowFragmentShader,
+            `#version 300 es
+            #pragma vscode_glsllint_stage: frag
+            precision lowp float;
+            uniform vec3 uColor;
+            uniform float uTime;
+            in float vGlowDistance;
+            out vec4 color;
+            void main() {
+                float falloff = 1.0 - smoothstep(0.0, 1.0, abs(vGlowDistance));
+                float pulse = 0.45 + 0.2 * sin(uTime * 3.0);
+                color = vec4(uColor, falloff * falloff * pulse * 0.75);
+            }`
+        );
+        gl.compileShader(portalGlowFragmentShader);
+        this.portalGlowProgram = gl.createProgram() as WebGLProgram;
+        gl.attachShader(this.portalGlowProgram, portalGlowVertexShader);
+        gl.attachShader(this.portalGlowProgram, portalGlowFragmentShader);
+        gl.linkProgram(this.portalGlowProgram);
+
         const mvpBlockIndex = gl.getUniformBlockIndex(this.playerProgram, "MVP");
         const mvpBlockSize = gl.getActiveUniformBlockParameter(this.playerProgram, mvpBlockIndex, gl.UNIFORM_BLOCK_DATA_SIZE);
+        const portalGlowMvpBlockIndex = gl.getUniformBlockIndex(this.portalGlowProgram, "MVP");
         this.mvpUbo = gl.createBuffer()!;
         gl.bindBuffer(gl.UNIFORM_BUFFER, this.mvpUbo);
         gl.bufferData(gl.UNIFORM_BUFFER, mvpBlockSize, gl.DYNAMIC_DRAW);
         gl.bindBuffer(gl.UNIFORM_BUFFER, null);
         gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, this.mvpUbo);
         gl.uniformBlockBinding(this.playerProgram, mvpBlockIndex, 0);
+        gl.uniformBlockBinding(this.portalGlowProgram, portalGlowMvpBlockIndex, 0);
 
         this.colorUniform = gl.getUniformLocation(this.playerProgram, "uColor")!;
+        this.alphaUniform = gl.getUniformLocation(this.playerProgram, "uAlpha")!;
+        this.portalGlowColorUniform = gl.getUniformLocation(this.portalGlowProgram, "uColor")!;
+        this.portalGlowTimeUniform = gl.getUniformLocation(this.portalGlowProgram, "uTime")!;
+
+        [this.fieldVao, this.fieldVbo] = this.createSegmentBuffer();
+        [this.worldVao, this.worldVbo] = this.createSegmentBuffer();
+        [this.portalGlowVao, this.portalGlowVbo] = this.createPortalGlowBuffer();
+        [this.portalVao, this.portalVbo] = this.createSegmentBuffer();
+        [this.portalCapVao, this.portalCapVbo] = this.createSegmentBuffer();
 
         this.indicatorVao = gl.createVertexArray()!;
         gl.bindVertexArray(this.indicatorVao);
@@ -111,15 +193,14 @@ export class Renderer {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-        this.gl = gl;
         this.players = new Map<string, Player>();
         this.indexToId = new Map<number, string>();
 
-        this.aspectRatio = aspectRatio;
-
         this.namesElement = document.getElementById("names")!;
 
-        this.resize();
+        this.aspectRatio = aspectRatio;
+        this.updateAspectRatio(aspectRatio);
+        this.updateFieldSegments();
     }
 
     private updateAspectRatio(aspectRatio: number) {
@@ -133,10 +214,49 @@ export class Renderer {
         this.resize();
     }
 
+    private createSegmentBuffer(): [WebGLVertexArrayObject, WebGLBuffer] {
+        const vao = this.gl.createVertexArray()!;
+        this.gl.bindVertexArray(vao);
+        const vbo = this.gl.createBuffer()!;
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, vbo);
+        this.gl.enableVertexAttribArray(0);
+        this.gl.vertexAttribPointer(0, 2, this.gl.FLOAT, false, 0, 0);
+        return [vao, vbo];
+    }
+
+    private createPortalGlowBuffer(): [WebGLVertexArrayObject, WebGLBuffer] {
+        const vao = this.gl.createVertexArray()!;
+        this.gl.bindVertexArray(vao);
+        const vbo = this.gl.createBuffer()!;
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, vbo);
+        this.gl.enableVertexAttribArray(0);
+        this.gl.vertexAttribPointer(0, 2, this.gl.FLOAT, false, 3 * 4, 0);
+        this.gl.enableVertexAttribArray(1);
+        this.gl.vertexAttribPointer(1, 1, this.gl.FLOAT, false, 3 * 4, 2 * 4);
+        return [vao, vbo];
+    }
+
+    private setColor(color: [number, number, number], alpha: number = 1) {
+        this.gl.uniform3fv(this.colorUniform, color);
+        this.gl.uniform1f(this.alphaUniform, alpha);
+    }
+
+    private setGlowColor(color: [number, number, number]) {
+        this.gl.uniform3fv(this.portalGlowColorUniform, color);
+    }
+
     updateGameSettings(gameSettings: GameSettings) {
+        const lineWidthChanged = this.lineWidth !== gameSettings.lineWidth;
+        const fieldChanged = this.aspectRatio !== gameSettings.aspectRatio || this.fieldShape !== gameSettings.fieldShape;
+        this.lineWidth = gameSettings.lineWidth;
+        this.fieldShape = gameSettings.fieldShape;
         this.updateAspectRatio(gameSettings.aspectRatio);
-        if (this.lineWidth !== gameSettings.lineWidth) {
-            this.lineWidth = gameSettings.lineWidth;
+        if (fieldChanged || lineWidthChanged) {
+            this.updateFieldSegments();
+        }
+        if (lineWidthChanged) {
+            this.uploadWorldSegments();
+            this.uploadPortalSegments();
             for (const player of this.players.values()) {
                 this.uploadPlayerSegments(player);
             }
@@ -207,19 +327,12 @@ export class Renderer {
             nameElement.innerText = `${playerInfo.name}: ${playerInfo.score}`;
             nameElement.style.color = `rgb(${Math.floor(playerInfo.color[0] * 255)}, ${Math.floor(playerInfo.color[1] * 255)}, ${Math.floor(playerInfo.color[2] * 255)})`;
         } else {
-            const vao = this.gl.createVertexArray();
-            this.gl.bindVertexArray(vao);
-            
-            const vbo = this.gl.createBuffer();
-            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, vbo);
-
-            this.gl.enableVertexAttribArray(0);
-            this.gl.vertexAttribPointer(0, 2, this.gl.FLOAT, false, 0, 0);
+            const [vao, vbo] = this.createSegmentBuffer();
 
             const player: Player = {
                 id: playerInfo.id,
-                vao: vao!,
-                vbo: vbo!,
+                vao,
+                vbo,
                 name: playerInfo.name,
                 color: playerInfo.color,
                 score: playerInfo.score,
@@ -254,27 +367,61 @@ export class Renderer {
         return true;
     }
 
-    private segmentToVertices(segment: Segment, output: Float32Array, offset: number) {
-        const [[p1x, p1y], [p2x, p2y]] = segment;
-        if (p1x === p2x) {
-            output.set([
-                p1x - this.lineWidth, p1y,
-                p1x + this.lineWidth, p1y,
-                p2x - this.lineWidth, p2y,
-                p2x - this.lineWidth, p2y,
-                p1x + this.lineWidth, p1y,
-                p2x + this.lineWidth, p2y
-            ], offset);
-        } else {
-            output.set([
-                p1x, p1y - this.lineWidth,
-                p1x, p1y + this.lineWidth,
-                p2x, p2y - this.lineWidth,
-                p2x, p2y - this.lineWidth,
-                p1x, p1y + this.lineWidth,
-                p2x, p2y + this.lineWidth
-            ], offset);
+    private segmentToVertices(segment: Segment, output: Float32Array, offset: number, width: number = this.lineWidth) {
+        const quad = segmentToQuad(segment, width);
+        if (!quad) {
+            output.fill(0, offset, offset + floatsPerSegment);
+            return;
         }
+
+        output.set([
+            quad[0][0], quad[0][1],
+            quad[3][0], quad[3][1],
+            quad[1][0], quad[1][1],
+            quad[1][0], quad[1][1],
+            quad[3][0], quad[3][1],
+            quad[2][0], quad[2][1]
+        ], offset);
+    }
+
+    private segmentsToVertices(segments: Segment[], width: number = this.lineWidth) {
+        const data = new Float32Array(floatsPerSegment * segments.length);
+        for (let i = 0; i < segments.length; i++) {
+            this.segmentToVertices(segments[i], data, floatsPerSegment * i, width);
+        }
+        return data;
+    }
+
+    private portalGlowSegmentsToVertices() {
+        const data = new Float32Array(floatsPerGlowSegment * this.portalSegments.length);
+        for (let i = 0; i < this.portalSegments.length; i++) {
+            this.portalGlowSegmentToVertices(this.portalSegments[i], data, floatsPerGlowSegment * i);
+        }
+        return data;
+    }
+
+    private portalGlowSegmentToVertices(segment: Segment, output: Float32Array, offset: number) {
+        const quad = segmentToQuad(segment, this.lineWidth * portalGlowWidthScale);
+        if (!quad) {
+            output.fill(0, offset, offset + floatsPerGlowSegment);
+            return;
+        }
+
+        output.set([
+            quad[0][0], quad[0][1], 1,
+            quad[3][0], quad[3][1], -1,
+            quad[1][0], quad[1][1], 1,
+            quad[1][0], quad[1][1], 1,
+            quad[3][0], quad[3][1], -1,
+            quad[2][0], quad[2][1], -1
+        ], offset);
+    }
+
+    private updateFieldSegments() {
+        const fieldSegments = buildFieldSegments(this.aspectRatio, this.fieldShape);
+        this.fieldSegmentCount = fieldSegments.length;
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.fieldVbo);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, this.segmentsToVertices(fieldSegments), this.gl.STATIC_DRAW);
     }
 
     private uploadPlayerSegments(player: Player, startIndex: number = 0) {
@@ -285,20 +432,97 @@ export class Renderer {
         const grew = this.ensureSegmentCapacity(player, player.segments.length);
         const uploadStartIndex = grew ? 0 : startIndex;
         const uploadSegments = player.segments.slice(uploadStartIndex);
-        const data = new Float32Array(floatsPerSegment * uploadSegments.length);
-
-        for (let i = 0; i < uploadSegments.length; i++) {
-            this.segmentToVertices(uploadSegments[i], data, floatsPerSegment * i);
-        }
 
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * uploadStartIndex, data);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * uploadStartIndex, this.segmentsToVertices(uploadSegments));
     }
 
     private uploadPlayerSegment(player: Player, segmentIndex: number) {
         this.segmentToVertices(player.segments[segmentIndex], this.segmentScratch, 0);
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * segmentIndex, this.segmentScratch);
+    }
+
+    private uploadWorldSegments() {
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.worldVbo);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, this.segmentsToVertices(this.worldSegments), this.gl.STATIC_DRAW);
+    }
+
+    private uploadPortalSegments() {
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalGlowVbo);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, this.portalGlowSegmentsToVertices(), this.gl.STATIC_DRAW);
+
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalVbo);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, this.segmentsToVertices(this.portalSegments), this.gl.STATIC_DRAW);
+
+        const capSegments = this.buildPortalCapSegments();
+        this.portalCapSegmentCount = capSegments.length;
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalCapVbo);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, this.segmentsToVertices(capSegments), this.gl.STATIC_DRAW);
+    }
+
+    private buildPortalCapSegments() {
+        const capSegments: Segment[] = [];
+        for (const segment of this.portalSegments) {
+            capSegments.push(...getPortalCapSegments(segment, this.lineWidth));
+        }
+        return capSegments;
+    }
+
+    private readSegment(view: DataView, offset: number): Segment {
+        return [[
+            uint16ToCoord(view.getUint16(offset + worldStatePacket.segmentStartXOffset, true), -this.aspectRatio, this.aspectRatio),
+            uint16ToCoord(view.getUint16(offset + worldStatePacket.segmentStartYOffset, true), -1.0, 1.0)
+        ], [
+            uint16ToCoord(view.getUint16(offset + worldStatePacket.segmentEndXOffset, true), -this.aspectRatio, this.aspectRatio),
+            uint16ToCoord(view.getUint16(offset + worldStatePacket.segmentEndYOffset, true), -1.0, 1.0)
+        ]];
+    }
+
+    updateWorldState(buffer: ArrayBuffer) {
+        if (buffer.byteLength < worldStatePacket.segmentCountBytes) {
+            return;
+        }
+
+        const view = new DataView(buffer);
+        const numSegments = view.getUint16(worldStatePacket.segmentCountOffset, true);
+        const expectedBytes = worldStatePacket.segmentCountBytes + numSegments * worldStatePacket.segmentBytes;
+        if (buffer.byteLength < expectedBytes) {
+            return;
+        }
+
+        const segments: Segment[] = [];
+        let offset = worldStatePacket.segmentCountBytes;
+        for (let i = 0; i < numSegments; i++) {
+            segments.push(this.readSegment(view, offset));
+            offset += worldStatePacket.segmentBytes;
+        }
+
+        let portalPairCount = 0;
+        const portalSegments: Segment[] = [];
+        if (offset < buffer.byteLength) {
+            portalPairCount = view.getUint8(offset);
+            offset += worldStatePacket.portalPairCountBytes;
+
+            const expectedPortalBytes = offset + portalPairCount * worldStatePacket.portalPairBytes;
+            if (buffer.byteLength < expectedPortalBytes) {
+                return;
+            }
+
+            for (let i = 0; i < portalPairCount; i++) {
+                portalSegments.push(
+                    this.readSegment(view, offset + worldStatePacket.portalSegmentAOffset),
+                    this.readSegment(view, offset + worldStatePacket.portalSegmentBOffset)
+                );
+                offset += worldStatePacket.portalPairBytes;
+            }
+        }
+
+        this.worldSegments = segments;
+        this.portalSegments = portalSegments;
+        this.portalPairCount = portalPairCount;
+        this.uploadWorldSegments();
+        this.uploadPortalSegments();
     }
 
     updateGameState(buffer: ArrayBuffer) {
@@ -342,19 +566,12 @@ export class Renderer {
             const segments: Segment[] = [];
 
             if (this.inCountdown && player.spawnPosition === null && numSegments > 0) {
-                player.spawnPosition = [
-                    uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartXOffset, true), -this.aspectRatio, this.aspectRatio),
-                    uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartYOffset, true), -1.0, 1.0)
-                ];
+                player.spawnPosition = this.readSegment(view, segmentOffset)[0];
             }
 
             for (let i = 0; i < numSegments; i++) {
-                const p1x = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartXOffset, true), -this.aspectRatio, this.aspectRatio);
-                const p1y = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentStartYOffset, true), -1.0, 1.0);
-                const p2x = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentEndXOffset, true), -this.aspectRatio, this.aspectRatio);
-                const p2y = uint16ToCoord(view.getUint16(segmentOffset + gameStatePacket.segmentEndYOffset, true), -1.0, 1.0);
+                segments.push(this.readSegment(view, segmentOffset));
                 segmentOffset += gameStatePacket.segmentBytes;
-                segments.push([[p1x, p1y], [p2x, p2y]]);
             }
 
             player.segments.splice(startIndex, player.segments.length - startIndex, ...segments);
@@ -412,13 +629,57 @@ export class Renderer {
         this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
         this.gl.useProgram(this.playerProgram);
+        if (this.fieldSegmentCount > 0) {
+            this.gl.bindVertexArray(this.fieldVao);
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.fieldVbo);
+            this.setColor(neutralColor);
+            this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * this.fieldSegmentCount);
+        }
+
+        if (this.worldSegments.length > 0) {
+            this.gl.bindVertexArray(this.worldVao);
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.worldVbo);
+            this.setColor(neutralColor);
+            this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * this.worldSegments.length);
+        }
+
+        if (this.portalPairCount > 0) {
+            this.gl.useProgram(this.portalGlowProgram);
+            this.gl.uniform1f(this.portalGlowTimeUniform, performance.now() / 1000);
+            this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE);
+            this.gl.bindVertexArray(this.portalGlowVao);
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalGlowVbo);
+            for (let i = 0; i < this.portalPairCount; i++) {
+                this.setGlowColor(portalColors[i % portalColors.length]);
+                this.gl.drawArrays(this.gl.TRIANGLES, i * verticesPerSegment * 2, verticesPerSegment * 2);
+            }
+            this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
+            this.gl.useProgram(this.playerProgram);
+        }
+
+        if (this.portalPairCount > 0) {
+            this.gl.bindVertexArray(this.portalVao);
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalVbo);
+            for (let i = 0; i < this.portalPairCount; i++) {
+                this.setColor(portalColors[i % portalColors.length]);
+                this.gl.drawArrays(this.gl.TRIANGLES, i * verticesPerSegment * 2, verticesPerSegment * 2);
+            }
+        }
+
+        if (this.portalCapSegmentCount > 0) {
+            this.gl.bindVertexArray(this.portalCapVao);
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalCapVbo);
+            this.setColor(neutralColor);
+            this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * this.portalCapSegmentCount);
+        }
+
         for (const player of this.players.values()) {
             if (player.segments.length === 0) {
                 continue;
             }
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-            this.gl.uniform3fv(this.colorUniform, player.color);
+            this.setColor(player.color);
             this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * player.segments.length);
         }
 
@@ -455,7 +716,7 @@ export class Renderer {
         let offset = 0;
         for (const player of this.players.values()) {
             if (!player.spawnPosition) continue;
-            this.gl.uniform3fv(this.colorUniform, player.color);
+            this.setColor(player.color);
             this.gl.drawArrays(this.gl.TRIANGLES, offset, 6);
             offset += 6;
         }

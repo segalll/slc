@@ -2,6 +2,18 @@ export type Point = [x: number, y: number];
 
 export type Segment = [Point, Point];
 
+export type PortalPair = [Segment, Segment];
+
+export const portalCapLineWidths = 6;
+
+export const fieldShapes = ["rectangle", "circle", "octagon", "diamond", "triangle"] as const;
+
+export type FieldShape = typeof fieldShapes[number];
+
+export const isFieldShape = (value: unknown): value is FieldShape => {
+    return typeof value === "string" && (fieldShapes as readonly string[]).includes(value);
+}
+
 export const gameStatePacket = {
     playerCountOffset: 0,
     playerCountBytes: 1,
@@ -24,6 +36,20 @@ export const gameTailPacket = {
     playerEndXOffset: 4,
     playerEndYOffset: 6,
     playerBytes: 8
+} as const;
+
+export const worldStatePacket = {
+    segmentCountOffset: 0,
+    segmentCountBytes: 2,
+    segmentStartXOffset: 0,
+    segmentStartYOffset: 2,
+    segmentEndXOffset: 4,
+    segmentEndYOffset: 6,
+    segmentBytes: 8,
+    portalPairCountBytes: 1,
+    portalSegmentAOffset: 0,
+    portalSegmentBOffset: 8,
+    portalPairBytes: 16
 } as const;
 
 export const uint16Max = 0xffff;
@@ -71,6 +97,9 @@ export const directionToVector = (direction: Direction): [number, number] => {
 
 export interface GameSettings {
     aspectRatio: number;
+    fieldShape: FieldShape;
     lineWidth: number;
     moveSpeed: number;
+    obstacles: boolean;
+    portals: boolean;
 }

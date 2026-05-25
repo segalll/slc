@@ -29,7 +29,6 @@ pre {
 
 canvas {
     box-sizing: border-box;
-    border: 2px solid #aaaaaa;
 }
 
 #join-data {
@@ -102,6 +101,10 @@ canvas {
 #settings-content input[type="range"] {
     flex: 1;
     accent-color: #aaaaaa;
+}
+
+#settings-content select {
+    flex: 1;
 }
 
 #settings-content span {

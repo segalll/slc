@@ -80,6 +80,9 @@ const lineWidthSlider = document.getElementById("setting-line-width") as HTMLInp
 const lineWidthValue = document.getElementById("setting-line-width-value")!;
 const aspectRatioSlider = document.getElementById("setting-aspect-ratio") as HTMLInputElement;
 const aspectRatioValue = document.getElementById("setting-aspect-ratio-value")!;
+const fieldShapeSelect = document.getElementById("setting-field-shape") as HTMLSelectElement;
+const obstaclesCheckbox = document.getElementById("setting-obstacles") as HTMLInputElement;
+const portalsCheckbox = document.getElementById("setting-portals") as HTMLInputElement;
 
 const updateSettingsDisplay = () => {
     speedValue.textContent = speedSlider.value;
@@ -108,6 +111,18 @@ aspectRatioSlider.addEventListener("input", () => {
     socket.emit("update_settings", { aspectRatio: parseFloat(aspectRatioSlider.value) });
 });
 
+fieldShapeSelect.addEventListener("change", () => {
+    socket.emit("update_settings", { fieldShape: fieldShapeSelect.value });
+});
+
+obstaclesCheckbox.addEventListener("change", () => {
+    socket.emit("update_settings", { obstacles: obstaclesCheckbox.checked });
+});
+
+portalsCheckbox.addEventListener("change", () => {
+    socket.emit("update_settings", { portals: portalsCheckbox.checked });
+});
+
 socket.on("session", (sessionID: string) => {
     localStorage.setItem("sessionID", sessionID);
     socket.auth = { sessionID };
@@ -127,6 +142,9 @@ socket.on("game_settings", (gameSettings: GameSettings) => {
     speedSlider.value = gameSettings.moveSpeed.toString();
     lineWidthSlider.value = gameSettings.lineWidth.toString();
     aspectRatioSlider.value = gameSettings.aspectRatio.toString();
+    fieldShapeSelect.value = gameSettings.fieldShape;
+    obstaclesCheckbox.checked = gameSettings.obstacles;
+    portalsCheckbox.checked = gameSettings.portals;
     updateSettingsDisplay();
 })
 
@@ -143,6 +161,10 @@ socket.on("game_state", (buffer: ArrayBuffer) => {
 
 socket.on("game_tail", (buffer: ArrayBuffer) => {
     renderer.updateGameTail(buffer);
+})
+
+socket.on("world_state", (buffer: ArrayBuffer) => {
+    renderer.updateWorldState(buffer);
 })
 
 socket.on("modify_player", (playerInfo: PlayerInfo) => {

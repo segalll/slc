@@ -3,7 +3,7 @@ import { Server, type Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
 import { Game } from "./game.js";
-import { isDirection } from "../shared/model.js";
+import { isDirection, isFieldShape } from "../shared/model.js";
 import type { GameSettings } from "../shared/model.js";
 
 interface SessionSocket extends Socket {
@@ -35,6 +35,18 @@ const parseSettingsUpdate = (value: unknown): Partial<GameSettings> | null => {
     if (payload.aspectRatio !== undefined) {
         if (typeof payload.aspectRatio !== "number") return null;
         settings.aspectRatio = payload.aspectRatio;
+    }
+    if (payload.fieldShape !== undefined) {
+        if (!isFieldShape(payload.fieldShape)) return null;
+        settings.fieldShape = payload.fieldShape;
+    }
+    if (payload.obstacles !== undefined) {
+        if (typeof payload.obstacles !== "boolean") return null;
+        settings.obstacles = payload.obstacles;
+    }
+    if (payload.portals !== undefined) {
+        if (typeof payload.portals !== "boolean") return null;
+        settings.portals = payload.portals;
     }
     return settings;
 }
