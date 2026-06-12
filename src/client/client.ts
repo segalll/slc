@@ -68,8 +68,10 @@ attemptConnection();
 
 const renderer = new Renderer(parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
 const inputManager = new InputManager(socket);
-const roundOver = new Audio("/snd/round_over.wav");
-roundOver.volume = 0.5;
+const death = new Audio("/snd/death.wav");
+death.volume = 0.5;
+const roundEnd = new Audio("/snd/round_end.wav");
+roundEnd.volume = 0.5;
 const countdown = new Audio("/snd/countdown.wav");
 countdown.volume = 0.5;
 
@@ -180,6 +182,11 @@ socket.on("starting", () => {
     countdown.play();
 })
 
+socket.on("death", () => {
+    death.currentTime = 0;
+    death.play();
+})
+
 socket.on("round_over", () => {
-    roundOver.play();
+    roundEnd.play();
 })

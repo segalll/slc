@@ -987,6 +987,15 @@ export class Game {
         this.playing = true;
     }
 
+    private sendDeathEvents(alive: string[]) {
+        const aliveIds = new Set(alive);
+        for (const id of this.prevAlive) {
+            if (!aliveIds.has(id) && this.players.has(id)) {
+                this.server.emit("death", id);
+            }
+        }
+    }
+
     private gameLoop() {
         if (this.roundStartTime !== null && Date.now() >= this.roundStartTime) {
             this.beginPlaying();
@@ -998,6 +1007,7 @@ export class Game {
 
         for (let i = 0; i < this.subTickRate; i++) {
             const alive = this.processSubTick();
+            this.sendDeathEvents(alive);
             if (alive.length <= 1) {
                 this.playing = false;
 
