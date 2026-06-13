@@ -14,17 +14,19 @@ interface Player {
     spawnPosition: [number, number] | null;
 }
 
+type Color = [number, number, number];
+
 const floatsPerSegment = 12;
 const floatsPerGlowSegment = 18;
 const verticesPerSegment = 6;
 const initialSegmentCapacity = 64;
-const neutralColor: [number, number, number] = [0.65, 0.65, 0.65];
+const neutralColor: Color = [0.65, 0.65, 0.65];
 const portalGlowWidthScale = 16;
-const portalColors: [number, number, number][] = [
-    [0.0, 0.75, 1.0],
-    [1.0, 0.25, 0.85],
-    [0.25, 1.0, 0.45],
-    [1.0, 0.75, 0.2]
+const portalColors: { core: Color; frontGlow: Color; backGlow: Color }[] = [
+    { core: [0.0, 0.75, 1.0], frontGlow: [0.0, 0.75, 1.0], backGlow: [1.0, 0.42, 0.0] },
+    { core: [0.35, 1.0, 0.35], frontGlow: [0.35, 1.0, 0.35], backGlow: [1.0, 0.2, 0.85] },
+    { core: [0.25, 0.45, 1.0], frontGlow: [0.25, 0.45, 1.0], backGlow: [1.0, 0.82, 0.12] },
+    { core: [0.0, 0.95, 0.85], frontGlow: [0.0, 0.95, 0.85], backGlow: [1.0, 0.18, 0.18] }
 ];
 
 const ortho = (left: number, right: number, bottom: number, top: number, near: number, far: number) => {
@@ -46,7 +48,8 @@ export class Renderer {
     private mvpUbo: WebGLBuffer;
     private colorUniform: WebGLUniformLocation;
     private alphaUniform: WebGLUniformLocation;
-    private portalGlowColorUniform: WebGLUniformLocation;
+    private portalGlowFrontColorUniform: WebGLUniformLocation;
+    private portalGlowBackColorUniform: WebGLUniformLocation;
     private portalGlowTimeUniform: WebGLUniformLocation;
     private fieldVao: WebGLVertexArrayObject;
     private fieldVbo: WebGLBuffer;
@@ -142,14 +145,16 @@ export class Renderer {
             `#version 300 es
             #pragma vscode_glsllint_stage: frag
             precision lowp float;
-            uniform vec3 uColor;
+            uniform vec3 uFrontColor;
+            uniform vec3 uBackColor;
             uniform float uTime;
             in float vGlowDistance;
             out vec4 color;
             void main() {
                 float falloff = 1.0 - smoothstep(0.0, 1.0, abs(vGlowDistance));
                 float pulse = 0.45 + 0.2 * sin(uTime * 3.0);
-                color = vec4(uColor, falloff * falloff * pulse * 0.75);
+                vec3 glowColor = mix(uBackColor, uFrontColor, step(0.0, vGlowDistance));
+                color = vec4(glowColor, falloff * falloff * pulse * 0.75);
             }`
         );
         gl.compileShader(portalGlowFragmentShader);
@@ -171,7 +176,8 @@ export class Renderer {
 
         this.colorUniform = gl.getUniformLocation(this.playerProgram, "uColor")!;
         this.alphaUniform = gl.getUniformLocation(this.playerProgram, "uAlpha")!;
-        this.portalGlowColorUniform = gl.getUniformLocation(this.portalGlowProgram, "uColor")!;
+        this.portalGlowFrontColorUniform = gl.getUniformLocation(this.portalGlowProgram, "uFrontColor")!;
+        this.portalGlowBackColorUniform = gl.getUniformLocation(this.portalGlowProgram, "uBackColor")!;
         this.portalGlowTimeUniform = gl.getUniformLocation(this.portalGlowProgram, "uTime")!;
 
         [this.fieldVao, this.fieldVbo] = this.createSegmentBuffer();
@@ -236,13 +242,27 @@ export class Renderer {
         return [vao, vbo];
     }
 
-    private setColor(color: [number, number, number], alpha: number = 1) {
+    private setColor(color: Color, alpha: number = 1) {
         this.gl.uniform3fv(this.colorUniform, color);
         this.gl.uniform1f(this.alphaUniform, alpha);
     }
 
-    private setGlowColor(color: [number, number, number]) {
-        this.gl.uniform3fv(this.portalGlowColorUniform, color);
+    private setGlowColors(frontColor: Color, backColor: Color) {
+        this.gl.uniform3fv(this.portalGlowFrontColorUniform, frontColor);
+        this.gl.uniform3fv(this.portalGlowBackColorUniform, backColor);
+    }
+
+    private getPortalColors(pairIndex: number) {
+        return portalColors[pairIndex % portalColors.length];
+    }
+
+    private setPortalGlowColors(segmentIndex: number) {
+        const colors = this.getPortalColors(Math.floor(segmentIndex / 2));
+        if (segmentIndex % 2 === 0) {
+            this.setGlowColors(colors.frontGlow, colors.backGlow);
+        } else {
+            this.setGlowColors(colors.backGlow, colors.frontGlow);
+        }
     }
 
     updateGameSettings(gameSettings: GameSettings) {
@@ -649,9 +669,9 @@ export class Renderer {
             this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE);
             this.gl.bindVertexArray(this.portalGlowVao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalGlowVbo);
-            for (let i = 0; i < this.portalPairCount; i++) {
-                this.setGlowColor(portalColors[i % portalColors.length]);
-                this.gl.drawArrays(this.gl.TRIANGLES, i * verticesPerSegment * 2, verticesPerSegment * 2);
+            for (let i = 0; i < this.portalSegments.length; i++) {
+                this.setPortalGlowColors(i);
+                this.gl.drawArrays(this.gl.TRIANGLES, i * verticesPerSegment, verticesPerSegment);
             }
             this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
             this.gl.useProgram(this.playerProgram);
@@ -661,7 +681,7 @@ export class Renderer {
             this.gl.bindVertexArray(this.portalVao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.portalVbo);
             for (let i = 0; i < this.portalPairCount; i++) {
-                this.setColor(portalColors[i % portalColors.length]);
+                this.setColor(this.getPortalColors(i).core);
                 this.gl.drawArrays(this.gl.TRIANGLES, i * verticesPerSegment * 2, verticesPerSegment * 2);
             }
         }

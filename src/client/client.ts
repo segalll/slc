@@ -85,11 +85,14 @@ const aspectRatioValue = document.getElementById("setting-aspect-ratio-value")!;
 const fieldShapeSelect = document.getElementById("setting-field-shape") as HTMLSelectElement;
 const obstaclesCheckbox = document.getElementById("setting-obstacles") as HTMLInputElement;
 const portalsCheckbox = document.getElementById("setting-portals") as HTMLInputElement;
+const maxPortalsSlider = document.getElementById("setting-max-portals") as HTMLInputElement;
+const maxPortalsValue = document.getElementById("setting-max-portals-value")!;
 
 const updateSettingsDisplay = () => {
     speedValue.textContent = speedSlider.value;
     lineWidthValue.textContent = lineWidthSlider.value;
     aspectRatioValue.textContent = aspectRatioSlider.value;
+    maxPortalsValue.textContent = maxPortalsSlider.value;
 };
 
 document.addEventListener("keydown", (e) => {
@@ -125,6 +128,11 @@ portalsCheckbox.addEventListener("change", () => {
     socket.emit("update_settings", { portals: portalsCheckbox.checked });
 });
 
+maxPortalsSlider.addEventListener("input", () => {
+    updateSettingsDisplay();
+    socket.emit("update_settings", { maxPortals: parseInt(maxPortalsSlider.value, 10) });
+});
+
 socket.on("session", (sessionID: string) => {
     localStorage.setItem("sessionID", sessionID);
     socket.auth = { sessionID };
@@ -147,6 +155,7 @@ socket.on("game_settings", (gameSettings: GameSettings) => {
     fieldShapeSelect.value = gameSettings.fieldShape;
     obstaclesCheckbox.checked = gameSettings.obstacles;
     portalsCheckbox.checked = gameSettings.portals;
+    maxPortalsSlider.value = gameSettings.maxPortals.toString();
     updateSettingsDisplay();
 })
 

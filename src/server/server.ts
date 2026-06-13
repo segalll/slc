@@ -32,6 +32,10 @@ const parseSettingsUpdate = (value: unknown): Partial<GameSettings> | null => {
         if (typeof payload.lineWidth !== "number") return null;
         settings.lineWidth = payload.lineWidth;
     }
+    if (payload.maxPortals !== undefined) {
+        if (typeof payload.maxPortals !== "number") return null;
+        settings.maxPortals = payload.maxPortals;
+    }
     if (payload.aspectRatio !== undefined) {
         if (typeof payload.aspectRatio !== "number") return null;
         settings.aspectRatio = payload.aspectRatio;

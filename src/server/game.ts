@@ -48,11 +48,16 @@ interface IgnoredPortal {
 const settingLimits = {
     moveSpeed: { min: 0.1, max: 2.0 },
     lineWidth: { min: 0.001, max: 0.02 },
+    maxPortals: { min: 0, max: 8 },
     aspectRatio: { min: 0.2, max: 5.0 }
 } as const;
 
 const isNumberInRange = (value: number, limit: { readonly min: number; readonly max: number }) => {
     return typeof value === "number" && Number.isFinite(value) && value >= limit.min && value <= limit.max;
+}
+
+const isIntegerInRange = (value: number, limit: { readonly min: number; readonly max: number }) => {
+    return Number.isInteger(value) && isNumberInRange(value, limit);
 }
 
 const colorFromHex = (hex: string): [number, number, number] => {
@@ -76,6 +81,7 @@ export class Game {
     private fieldSegments: Segment[] = buildFieldSegments(this.aspectRatio, this.fieldShape);
     private obstacles: boolean = false;
     private portals: boolean = false;
+    private maxPortals: number = 1;
     private worldSegments: Segment[] = [];
     private portalPairs: PortalPair[] = [];
     private portalCapSegments: Segment[] = [];
@@ -89,6 +95,7 @@ export class Game {
     private static readonly defaultFieldShape: FieldShape = "rectangle";
     private static readonly defaultObstacles = false;
     private static readonly defaultPortals = false;
+    private static readonly defaultMaxPortals = 1;
     private static readonly countdownDuration = 3000;
 
     private playing: boolean = false;
@@ -108,6 +115,7 @@ export class Game {
             aspectRatio: this.aspectRatio,
             fieldShape: this.fieldShape,
             lineWidth: this.lineWidth,
+            maxPortals: this.maxPortals,
             moveSpeed: this.moveSpeed,
             obstacles: this.obstacles,
             portals: this.portals
@@ -121,10 +129,12 @@ export class Game {
         let fieldShape = this.fieldShape;
         let obstacles = this.obstacles;
         let portals = this.portals;
+        let maxPortals = this.maxPortals;
         let changed = false;
         let worldChanged = false;
         let obstaclesChanged = false;
         let portalsChanged = false;
+        let portalGenerationChanged = false;
         let fieldChanged = false;
 
         if (settings.moveSpeed !== undefined) {
@@ -162,6 +172,12 @@ export class Game {
             worldChanged = true;
             portalsChanged = true;
         }
+        if (settings.maxPortals !== undefined) {
+            if (!isIntegerInRange(settings.maxPortals, settingLimits.maxPortals)) return;
+            maxPortals = settings.maxPortals;
+            changed = true;
+            portalGenerationChanged = true;
+        }
         if (!changed) {
             return;
         }
@@ -172,6 +188,7 @@ export class Game {
         this.fieldShape = fieldShape;
         this.obstacles = obstacles;
         this.portals = portals;
+        this.maxPortals = maxPortals;
         if (fieldChanged) {
             this.rebuildFieldSegments();
         }
@@ -180,7 +197,7 @@ export class Game {
             this.setPortalPairs(this.portalPairs);
         }
         this.server.emit("game_settings", this.getSettings());
-        if ((obstaclesChanged || portalsChanged || fieldChanged) && !this.playing) {
+        if ((obstaclesChanged || portalsChanged || portalGenerationChanged || fieldChanged) && !this.playing) {
             if (this.roundStartTime !== null) {
                 this.buildRoundWorld();
             } else {
@@ -284,20 +301,34 @@ export class Game {
     }
 
     private buildRandomPortalPairs(): PortalPair[] {
-        const first = this.buildRandomPortalSegment([]);
-        if (!first) {
-            return [];
+        const pairs: PortalPair[] = [];
+        const existingSegments: Segment[] = [];
+        const pairCount = this.maxPortals === 0 ? 0 : 1 + Math.floor(Math.random() * this.maxPortals);
+        for (let i = 0; i < pairCount; i++) {
+            const pair = this.buildRandomPortalPair(existingSegments);
+            if (pair) {
+                pairs.push(pair);
+                existingSegments.push(...pair);
+            }
         }
-
-        const second = this.buildRandomPortalSegment([first]);
-        return second ? [[first, second]] : [];
+        return pairs;
     }
 
-    private buildRandomPortalSegment(existingSegments: Segment[]): Segment | null {
+    private buildRandomPortalPair(existingSegments: Segment[]): PortalPair | null {
+        const length = getFieldMinRadius(this.aspectRatio) * (0.18 + Math.random() * 0.16);
+        const first = this.buildRandomPortalSegment(existingSegments, length);
+        if (!first) {
+            return null;
+        }
+
+        const second = this.buildRandomPortalSegment([...existingSegments, first], length, first);
+        return second ? [first, second] : null;
+    }
+
+    private buildRandomPortalSegment(existingSegments: Segment[], length: number, linkedSegment?: Segment): Segment | null {
         const fieldMargin = this.getFieldMargin();
         for (let i = 0; i < 64; i++) {
             const center = this.getRandomFieldPoint(fieldMargin);
-            const length = getFieldMinRadius(this.aspectRatio) * (0.18 + Math.random() * 0.16);
             const horizontal = Math.random() < 0.5;
             const half = length / 2;
             let segment: Segment = horizontal
@@ -306,11 +337,25 @@ export class Game {
             if (Math.random() < 0.5) {
                 segment = [segment[1], segment[0]];
             }
+            if (linkedSegment && this.segmentCenterDistanceSq(segment, linkedSegment) < this.getMinPortalPairDistanceSq()) {
+                continue;
+            }
             if (this.isPortalSegmentClear(segment, existingSegments, fieldMargin)) {
                 return segment;
             }
         }
         return null;
+    }
+
+    private segmentCenterDistanceSq(a: Segment, b: Segment) {
+        const dx = (a[0][0] + a[1][0] - b[0][0] - b[1][0]) / 2;
+        const dy = (a[0][1] + a[1][1] - b[0][1] - b[1][1]) / 2;
+        return dx * dx + dy * dy;
+    }
+
+    private getMinPortalPairDistanceSq() {
+        const distance = getFieldMinRadius(this.aspectRatio) * 0.6;
+        return distance * distance;
     }
 
     private isPortalSegmentClear(segment: Segment, existingSegments: Segment[], fieldMargin: number) {
@@ -696,6 +741,7 @@ export class Game {
             this.rebuildFieldSegments();
             this.obstacles = Game.defaultObstacles;
             this.portals = Game.defaultPortals;
+            this.maxPortals = Game.defaultMaxPortals;
             this.setWorldSegments([]);
             this.setPortalPairs([]);
             this.nextPlayerIndex = 0;

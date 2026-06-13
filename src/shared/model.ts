@@ -99,6 +99,7 @@ export interface GameSettings {
     aspectRatio: number;
     fieldShape: FieldShape;
     lineWidth: number;
+    maxPortals: number;
     moveSpeed: number;
     obstacles: boolean;
     portals: boolean;
