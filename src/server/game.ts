@@ -99,6 +99,8 @@ export class Game {
     private static readonly countdownDuration = 3000;
 
     private playing: boolean = false;
+    private tick: number = 0; // free-running 60Hz counter; stamps volatile packets for ordering and as the shared time base
+    private datagramWriters: Map<string, WritableStreamDefaultWriter<Uint8Array>> = new Map(); // userID -> volatile datagram channel, kept independent of player lifecycle
     private roundStartTime: number | null = null;
     private prevAlive: string[] = []; // list of ids of players that were alive last tick
     private nextPlayerIndex: number = 0;
@@ -728,6 +730,7 @@ export class Game {
             return;
         }
         this.players.delete(id);
+        this.datagramWriters.delete(id);
         for (const otherPlayer of this.players.values()) {
             otherPlayer.lastSentSegmentIndices.delete(id);
         }
@@ -745,6 +748,14 @@ export class Game {
             this.setWorldSegments([]);
             this.setPortalPairs([]);
             this.nextPlayerIndex = 0;
+        }
+    }
+
+    setDatagramWriter(id: string, writer: WritableStreamDefaultWriter<Uint8Array> | null) {
+        if (writer) {
+            this.datagramWriters.set(id, writer);
+        } else {
+            this.datagramWriters.delete(id);
         }
     }
 
@@ -984,12 +995,13 @@ export class Game {
 
         if (playerData.length === 0) return;
 
-        const buffer = new ArrayBuffer(gameTailPacket.playerCountBytes + playerData.length * gameTailPacket.playerBytes);
+        const buffer = new ArrayBuffer(gameTailPacket.headerBytes + playerData.length * gameTailPacket.playerBytes);
         const view = new DataView(buffer);
 
+        view.setUint32(gameTailPacket.tickOffset, this.tick >>> 0, true);
         view.setUint8(gameTailPacket.playerCountOffset, playerData.length);
 
-        let offset = gameTailPacket.playerCountBytes;
+        let offset = gameTailPacket.headerBytes;
         for (const { index, segmentIndex, end } of playerData) {
             view.setUint16(offset + gameTailPacket.playerIndexOffset, index, true);
             view.setUint16(offset + gameTailPacket.playerSegmentIndexOffset, segmentIndex, true);
@@ -998,9 +1010,13 @@ export class Game {
             offset += gameTailPacket.playerBytes;
         }
 
+        const datagram = new Uint8Array(buffer);
         for (const receiver of this.players.values()) {
+            const writer = this.datagramWriters.get(receiver.id);
             if (reliable) {
                 receiver.socket.emit("game_tail", buffer);
+            } else if (writer) {
+                writer.write(datagram).catch(() => {});
             } else {
                 receiver.socket.volatile.emit("game_tail", buffer);
             }
@@ -1043,6 +1059,8 @@ export class Game {
     }
 
     private gameLoop() {
+        this.tick++;
+
         if (this.roundStartTime !== null && Date.now() >= this.roundStartTime) {
             this.beginPlaying();
         }

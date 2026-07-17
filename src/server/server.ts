@@ -3,6 +3,7 @@ import { Server, type Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
 import { Game } from "./game.js";
+import { startWebTransport } from "./webtransport.js";
 import { isDirection, isFieldShape } from "../shared/model.js";
 import type { GameSettings } from "../shared/model.js";
 
@@ -104,6 +105,11 @@ io.use((socket, next) => {
 
 const game = new Game(io);
 
+const wtPort = await startWebTransport({
+    resolveToken: (token) => sessionStore.get(token)?.userID ?? null,
+    onWriter: (userID, writer) => game.setDatagramWriter(userID, writer)
+});
+
 const timeout = 3000; // ms
 
 io.on("connection", (socket) => {
@@ -113,6 +119,9 @@ io.on("connection", (socket) => {
     session.socket = sessionSocket;
     session.generation++;
     socket.emit("session", session.sessionID);
+    if (wtPort !== null) {
+        socket.emit("webtransport", { port: wtPort, token: session.sessionID });
+    }
 
     console.log(`Connection | ID: ${session.userID}`);
     socket.on("join", () => {

@@ -1,7 +1,8 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
 import { InputManager } from "./input";
-import type { GameSettings, PlayerInfo } from "../shared/model";
+import { connectWebTransport } from "./webtransport";
+import type { GameSettings, PlayerInfo, WebTransportInfo } from "../shared/model";
 
 const socket = io(window.location.toString(), {
     autoConnect: false,
@@ -172,6 +173,12 @@ socket.on("game_state", (buffer: ArrayBuffer) => {
 
 socket.on("game_tail", (buffer: ArrayBuffer) => {
     renderer.updateGameTail(buffer);
+})
+
+let webTransport: WebTransport | null = null;
+socket.on("webtransport", (info: WebTransportInfo) => {
+    try { webTransport?.close(); } catch { /* already closed */ }
+    webTransport = connectWebTransport(info, (data) => renderer.updateGameTail(data));
 })
 
 socket.on("world_state", (buffer: ArrayBuffer) => {

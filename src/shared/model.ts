@@ -29,8 +29,11 @@ export const gameStatePacket = {
 } as const;
 
 export const gameTailPacket = {
-    playerCountOffset: 0,
+    tickOffset: 0,
+    tickBytes: 4,
+    playerCountOffset: 4,
     playerCountBytes: 1,
+    headerBytes: 5,
     playerIndexOffset: 0,
     playerSegmentIndexOffset: 2,
     playerEndXOffset: 4,
@@ -93,6 +96,11 @@ export const directionToVector = (direction: Direction): [number, number] => {
         case Direction.Left:
             return [-1, 0];
     }
+}
+
+export interface WebTransportInfo {
+    port: number;
+    token: string;
 }
 
 export interface GameSettings {

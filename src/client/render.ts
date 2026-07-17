@@ -75,6 +75,7 @@ export class Renderer {
     private lineWidth: number = 0.002;
     private segmentScratch: Float32Array = new Float32Array(floatsPerSegment);
 
+    private lastTailTick: number = 0;
     private renderLoopStarted: boolean = false;
     private inCountdown: boolean = false;
     private countdownTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -321,6 +322,7 @@ export class Renderer {
 
     prepareRound() {
         this.inCountdown = true;
+        this.lastTailTick = 0;
         for (const player of this.players.values()) {
             player.segments = [];
             player.spawnPosition = null;
@@ -599,19 +601,28 @@ export class Renderer {
         }
     }
 
-    updateGameTail(buffer: ArrayBuffer) {
-        if (buffer.byteLength < gameTailPacket.playerCountBytes) {
+    updateGameTail(data: ArrayBuffer | Uint8Array) {
+        const view = data instanceof Uint8Array
+            ? new DataView(data.buffer, data.byteOffset, data.byteLength)
+            : new DataView(data);
+        if (view.byteLength < gameTailPacket.headerBytes) {
             return;
         }
 
-        const view = new DataView(buffer);
+        // Datagrams can arrive out of order; ignore any tail older than the newest already applied.
+        const tick = view.getUint32(gameTailPacket.tickOffset, true);
+        if (tick < this.lastTailTick) {
+            return;
+        }
+        this.lastTailTick = tick;
+
         const numPlayers = view.getUint8(gameTailPacket.playerCountOffset);
-        const expectedBytes = gameTailPacket.playerCountBytes + numPlayers * gameTailPacket.playerBytes;
-        if (buffer.byteLength < expectedBytes) {
+        const expectedBytes = gameTailPacket.headerBytes + numPlayers * gameTailPacket.playerBytes;
+        if (view.byteLength < expectedBytes) {
             return;
         }
 
-        let offset = gameTailPacket.playerCountBytes;
+        let offset = gameTailPacket.headerBytes;
         for (let p = 0; p < numPlayers; p++) {
             const playerIndex = view.getUint16(offset + gameTailPacket.playerIndexOffset, true);
             const segmentIndex = view.getUint16(offset + gameTailPacket.playerSegmentIndexOffset, true);

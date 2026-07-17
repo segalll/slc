@@ -18,6 +18,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@fails-components/webtransport": "^1.6.4",
+    "@fails-components/webtransport-transport-http3-quiche": "^1.6.4",
     "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3"
@@ -28,6 +30,7 @@
     "typescript": "^6.0.2"
   },
   "allowScripts": {
-    "esbuild@0.28.1": true
+    "esbuild@0.28.1": true,
+    "@fails-components/webtransport-transport-http3-quiche@1.6.4": true
   }
 }
