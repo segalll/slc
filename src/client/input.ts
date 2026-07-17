@@ -1,15 +1,18 @@
 import type { Socket } from "socket.io-client";
 import { Direction } from "../shared/model";
+import type { Renderer } from "./render";
 
 export class InputManager {
     private socket: Socket;
+    private renderer: Renderer;
     private keyMap: Map<string, Direction>;
     private startX: number = 0;
     private startY: number = 0;
     private started: boolean = false;
 
-    constructor(socket: Socket) {
+    constructor(socket: Socket, renderer: Renderer) {
         this.socket = socket;
+        this.renderer = renderer;
         this.keyMap = new Map<string, Direction>();
         this.keyMap.set("ArrowLeft", Direction.Left);
         this.keyMap.set("ArrowRight", Direction.Right);
@@ -22,34 +25,28 @@ export class InputManager {
         this.startY = e.touches[0].clientY;
     }
 
+    private sendDirection(direction: Direction) {
+        const seq = this.renderer.onLocalTurn(direction);
+        this.socket.emit("input", { d: direction, s: seq });
+    }
+
     private onTouchEnd(e: TouchEvent) {
-        const endX = e.changedTouches[0].clientX;
-        const endY = e.changedTouches[0].clientY;
-        const dx = endX - this.startX;
-        const dy = endY - this.startY;
+        const dx = e.changedTouches[0].clientX - this.startX;
+        const dy = e.changedTouches[0].clientY - this.startY;
         if (Math.abs(dx) > Math.abs(dy)) {
-            if (dx > 0) {
-                this.socket.emit("input", Direction.Right);
-            } else {
-                this.socket.emit("input", Direction.Left);
-            }
+            this.sendDirection(dx > 0 ? Direction.Right : Direction.Left);
         } else {
-            if (dy > 0) {
-                this.socket.emit("input", Direction.Down);
-            } else {
-                this.socket.emit("input", Direction.Up);
-            }
+            this.sendDirection(dy > 0 ? Direction.Down : Direction.Up);
         }
     }
-    
+
     private onKeyDown(e: KeyboardEvent) {
         if (e.key === "Enter") {
             this.socket.emit("start");
         }
 
         if (this.keyMap.has(e.key)) {
-            const direction = this.keyMap.get(e.key)!;
-            this.socket.emit("input", direction);
+            this.sendDirection(this.keyMap.get(e.key)!);
         }
     }
 

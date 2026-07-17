@@ -137,10 +137,14 @@ io.on("connection", (socket) => {
         }
     })
 
-    socket.on("input", (direction) => {
-        if (isDirection(direction)) {
-            game.processInput(session.userID, direction);
+    socket.on("input", (msg) => {
+        if (msg && isDirection(msg.d) && Number.isInteger(msg.s)) {
+            game.processInput(session.userID, msg.d, msg.s);
         }
+    })
+
+    socket.on("time_sync", (clientTime) => {
+        socket.emit("time_sync", { c: clientTime, s: game.getTick() });
     })
 
     socket.on("disconnect", () => {

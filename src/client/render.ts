@@ -1,6 +1,7 @@
-import { gameStatePacket, gameTailPacket, tickRate, uint16ToCoord, worldStatePacket } from "../shared/model";
+import { Direction, directionToVector, gameStatePacket, gameTailPacket, tickRate, uint16ToCoord, worldStatePacket } from "../shared/model";
 import { buildFieldSegments, getPortalCapSegments, segmentToQuad } from "../shared/geometry";
 import type { FieldShape, GameSettings, PlayerInfo, Segment } from "../shared/model";
+import type { Clock } from "./clock";
 
 interface Player {
     id: string;
@@ -29,6 +30,24 @@ const initialSegmentCapacity = 64;
 const remoteDelayTicks = 3;   // how far behind the newest server tick remote players are drawn (~50ms)
 const playoutSlew = 0.05;     // per-frame pull of the playout clock toward its delay target
 const maxTailSamples = 16;    // per-player ring of recent (tick, head) samples for the current segment
+
+const predictLocal = true;    // client-side prediction of the local player; set false to render it authoritatively
+const secondsPerTick = 1 / tickRate;
+
+// Axis-aligned unit vector of a movement delta, or null if too small to tell (just spawned/turned).
+const axisUnit = (dx: number, dy: number): [number, number] | null => {
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    if (adx < 1e-9 && ady < 1e-9) return null;
+    return adx >= ady ? [Math.sign(dx), 0] : [0, Math.sign(dy)];
+};
+
+// Matches the server's rule: a turn must change axis (no reversing or continuing along the same axis).
+const isValidTurn = (dir: [number, number], turn: Direction): boolean => {
+    return dir[1] === 0
+        ? turn === Direction.Up || turn === Direction.Down
+        : turn === Direction.Left || turn === Direction.Right;
+};
 const neutralColor: Color = [0.65, 0.65, 0.65];
 const portalGlowWidthScale = 16;
 const portalColors: { core: Color; frontGlow: Color; backGlow: Color }[] = [
@@ -88,6 +107,14 @@ export class Renderer {
     private localIndex: number = -1;   // this client's own player index, or -1 until known
     private playoutTick: number = 0;   // interpolation clock for remote players, in server-tick units
     private lastFrameTime: number = 0;
+
+    private clock: Clock | null = null;
+    private moveSpeed: number = 0.3;
+    private inputSeq: number = 0;                                              // last assigned local input sequence
+    private pendingTurns: { seq: number; dir: Direction; tick: number }[] = []; // predicted turns awaiting server ack
+    private localAuthHeadTick: number = 0;                                     // server tick of the local player's authoritative head
+    private lastLocalDir: [number, number] | null = null;                      // last known local heading (geometry fallback)
+    private localRenderCount: number = 0;                                      // segments to draw for the local player this frame
     private renderLoopStarted: boolean = false;
     private inCountdown: boolean = false;
     private countdownTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -279,6 +306,7 @@ export class Renderer {
     }
 
     updateGameSettings(gameSettings: GameSettings) {
+        this.moveSpeed = gameSettings.moveSpeed;
         const lineWidthChanged = this.lineWidth !== gameSettings.lineWidth;
         const fieldChanged = this.aspectRatio !== gameSettings.aspectRatio || this.fieldShape !== gameSettings.fieldShape;
         this.lineWidth = gameSettings.lineWidth;
@@ -336,6 +364,10 @@ export class Renderer {
         this.inCountdown = true;
         this.lastTailTick = 0;
         this.playoutTick = 0;
+        this.pendingTurns.length = 0;
+        this.lastLocalDir = null;
+        this.localAuthHeadTick = 0;
+        this.localRenderCount = 0;
         for (const player of this.players.values()) {
             player.segments = [];
             player.spawnPosition = null;
@@ -364,6 +396,41 @@ export class Renderer {
 
     private getLocalId(): string | undefined {
         return this.localIndex >= 0 ? this.indexToId.get(this.localIndex) : undefined;
+    }
+
+    setClock(clock: Clock) {
+        this.clock = clock;
+    }
+
+    private getLocalPlayer(): Player | undefined {
+        const id = this.getLocalId();
+        return id ? this.players.get(id) : undefined;
+    }
+
+    // Current predicted heading: the last pending turn, else the authoritative growing-segment direction.
+    private predictedDir(local: Player): [number, number] | null {
+        if (this.pendingTurns.length > 0) {
+            return directionToVector(this.pendingTurns[this.pendingTurns.length - 1].dir);
+        }
+        const n = local.segments.length;
+        if (n === 0) return this.lastLocalDir;
+        const q = local.segments[n - 1][0];
+        const head = local.segments[n - 1][1];
+        return axisUnit(head[0] - q[0], head[1] - q[1]) ?? this.lastLocalDir;
+    }
+
+    // Called on every local direction input. Assigns a sequence number, predicts the turn locally if
+    // valid, and returns the sequence for the caller to send to the server.
+    onLocalTurn(direction: Direction): number {
+        const seq = ++this.inputSeq;
+        const local = this.getLocalPlayer();
+        if (predictLocal && this.clock?.synced && local && !local.dead && !this.inCountdown && local.segments.length > 0) {
+            const dir = this.predictedDir(local);
+            if (dir && isValidTurn(dir, direction)) {
+                this.pendingTurns.push({ seq, dir: direction, tick: this.clock.serverTickNow() });
+            }
+        }
+        return seq;
     }
 
     modifyPlayer(playerInfo: PlayerInfo) {
@@ -580,18 +647,24 @@ export class Renderer {
     }
 
     updateGameState(buffer: ArrayBuffer) {
-        if (buffer.byteLength < gameStatePacket.playerCountBytes) {
+        if (buffer.byteLength < gameStatePacket.headerBytes) {
             return;
         }
 
         const view = new DataView(buffer);
+        const ackSeq = view.getUint32(gameStatePacket.ackSeqOffset, true);
         const numPlayers = view.getUint8(gameStatePacket.playerCountOffset);
-        const headerSize = gameStatePacket.playerCountBytes + numPlayers * gameStatePacket.playerHeaderBytes;
+        const headerSize = gameStatePacket.headerBytes + numPlayers * gameStatePacket.playerHeaderBytes;
         if (buffer.byteLength < headerSize) {
             return;
         }
 
-        let offset = gameStatePacket.playerCountBytes;
+        // Drop predicted turns the server has now processed; the rest are replayed on top of the authoritative state.
+        while (this.pendingTurns.length > 0 && this.pendingTurns[0].seq <= ackSeq) {
+            this.pendingTurns.shift();
+        }
+
+        let offset = gameStatePacket.headerBytes;
         let segmentOffset = headerSize;
 
         for (let p = 0; p < numPlayers; p++) {
@@ -683,8 +756,9 @@ export class Renderer {
             }
 
             if (playerId === localId) {
-                // local player stays on the authoritative head; Phase 2b will predict it
+                // local player: record the authoritative head + its tick as the prediction anchor
                 player.segments[segmentIndex][1] = end;
+                this.localAuthHeadTick = tick;
                 this.uploadPlayerSegment(player, segmentIndex);
             } else {
                 player.tailSamples.push({ tick, end });
@@ -746,6 +820,54 @@ export class Renderer {
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * last, this.segmentScratch);
     }
 
+    // Rebuilds the local trail from the authoritative committed segments plus predicted (unacked) turns,
+    // advancing the head to the current server time. Returns null to fall back to authoritative rendering.
+    private reconstructLocalTrail(local: Player): Segment[] | null {
+        if (this.localAuthHeadTick === 0) return null; // no authoritative head sample yet this round
+        const n = local.segments.length;
+        const q = local.segments[n - 1][0];
+        const authHead = local.segments[n - 1][1];
+        const dir = axisUnit(authHead[0] - q[0], authHead[1] - q[1]) ?? this.lastLocalDir;
+        if (!dir) return null;
+        this.lastLocalDir = dir;
+
+        const now = this.clock!.serverTickNow();
+        const result: Segment[] = local.segments.slice(0, n - 1);
+        let start: [number, number] = [q[0], q[1]];
+        let pos: [number, number] = [authHead[0], authHead[1]];
+        let tick = this.localAuthHeadTick;
+        let heading = dir;
+
+        for (const turn of this.pendingTurns) {
+            const advance = this.moveSpeed * (turn.tick - tick) * secondsPerTick;
+            const corner: [number, number] = [pos[0] + heading[0] * advance, pos[1] + heading[1] * advance];
+            result.push([start, corner]);
+            start = corner;
+            pos = corner;
+            tick = turn.tick;
+            heading = directionToVector(turn.dir);
+        }
+        const advance = this.moveSpeed * (now - tick) * secondsPerTick;
+        result.push([start, [pos[0] + heading[0] * advance, pos[1] + heading[1] * advance]]);
+        return result;
+    }
+
+    private updateLocalHead() {
+        const local = this.getLocalPlayer();
+        if (!local || local.segments.length === 0) {
+            this.localRenderCount = 0;
+            return;
+        }
+        const predicted = predictLocal && this.clock?.synced && !local.dead
+            ? this.reconstructLocalTrail(local)
+            : null;
+        const trail = predicted ?? local.segments;
+        this.localRenderCount = trail.length;
+        this.ensureSegmentCapacity(local, trail.length);
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, local.vbo);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, this.segmentsToVertices(trail));
+    }
+
     renderLoop() {
         if (this.renderLoopStarted) {
             return;
@@ -804,15 +926,18 @@ export class Renderer {
         }
 
         this.updateRemoteHeads();
+        this.updateLocalHead();
 
+        const localId = this.getLocalId();
         for (const player of this.players.values()) {
-            if (player.segments.length === 0) {
+            const count = player.id === localId ? this.localRenderCount : player.segments.length;
+            if (count === 0) {
                 continue;
             }
             this.gl.bindVertexArray(player.vao);
             this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
             this.setColor(player.color);
-            this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * player.segments.length);
+            this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * count);
         }
 
         if (this.inCountdown) {

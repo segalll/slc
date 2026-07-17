@@ -30,6 +30,7 @@ interface Player {
     socket: Socket;
     lastSentSegmentIndices: Map<string, number>; // per player
     pendingReliableState: boolean;
+    lastInputSeq: number; // highest input sequence processed, echoed to the client for prediction reconciliation
 }
 
 interface PortalHit {
@@ -74,6 +75,7 @@ export class Game {
     private numPartitions: number = 10; // number of partitions per axis
     private moveSpeed: number = 0.3;
     private subTickRate: number = 3;
+    private tailInterval: number = 1; // send the volatile tail every N ticks (1 = 60Hz); raise to cut bandwidth (clients predict/interpolate the gaps)
     private aspectRatio: number = 1.5;
     private fieldShape: FieldShape = "rectangle";
     private lineWidth: number = 0.002;
@@ -703,7 +705,8 @@ export class Game {
 
                 socket,
                 lastSentSegmentIndices: new Map<string, number>(),
-                pendingReliableState: false
+                pendingReliableState: false,
+                lastInputSeq: 0
             });
         } else {
             const player = this.players.get(id)!;
@@ -759,12 +762,17 @@ export class Game {
         }
     }
 
-    processInput(id: string, direction: Direction) {
+    getTick() {
+        return this.tick;
+    }
+
+    processInput(id: string, direction: Direction, seq: number) {
         if (!this.players.has(id)) {
             return;
         }
 
         const player = this.players.get(id)!;
+        player.lastInputSeq = seq;
         if (!this.playing) {
             player.startingDirection = direction;
             return;
@@ -923,13 +931,14 @@ export class Game {
 
         if (playerData.length === 0) return;
 
-        const headerSize = gameStatePacket.playerCountBytes + playerData.length * gameStatePacket.playerHeaderBytes;
+        const headerSize = gameStatePacket.headerBytes + playerData.length * gameStatePacket.playerHeaderBytes;
         const buffer = new ArrayBuffer(headerSize + totalSegments * gameStatePacket.segmentBytes);
         const view = new DataView(buffer);
 
+        view.setUint32(gameStatePacket.ackSeqOffset, receiver.lastInputSeq >>> 0, true);
         view.setUint8(gameStatePacket.playerCountOffset, playerData.length);
 
-        let offset = gameStatePacket.playerCountBytes;
+        let offset = gameStatePacket.headerBytes;
         let segmentOffset = headerSize;
 
         for (const { index, startIndex, segments } of playerData) {
@@ -1121,7 +1130,9 @@ export class Game {
                 this.sendGameState(receiver, reliableSources);
             }
         }
-        this.sendGameTail(reliableSources.length > 0);
+        if (reliableSources.length > 0 || this.tick % this.tailInterval === 0) {
+            this.sendGameTail(reliableSources.length > 0);
+        }
         for (const player of reliableSources) {
             player.pendingReliableState = false;
         }

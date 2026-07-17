@@ -1,6 +1,7 @@
 import { io } from "socket.io-client";
 import { Renderer } from "./render";
 import { InputManager } from "./input";
+import { Clock } from "./clock";
 import { connectWebTransport } from "./webtransport";
 import type { GameSettings, PlayerInfo, WebTransportInfo } from "../shared/model";
 
@@ -68,7 +69,9 @@ const attemptConnection = () => {
 attemptConnection();
 
 const renderer = new Renderer(parseFloat(localStorage.getItem("aspectRatio") || "1.5"));
-const inputManager = new InputManager(socket);
+const inputManager = new InputManager(socket, renderer);
+const clock = new Clock();
+renderer.setClock(clock);
 const death = new Audio("/snd/death.wav");
 death.volume = 0.5;
 const roundEnd = new Audio("/snd/round_end.wav");
@@ -143,6 +146,7 @@ socket.on("session", (sessionID: string) => {
 socket.on("connect", () => {
     document.getElementById("join-data")?.remove();
     socket.emit("join");
+    clock.start(socket);
     inputManager.start();
     renderer.renderLoop();
 })

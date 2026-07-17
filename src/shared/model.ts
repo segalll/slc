@@ -15,8 +15,11 @@ export const isFieldShape = (value: unknown): value is FieldShape => {
 }
 
 export const gameStatePacket = {
-    playerCountOffset: 0,
+    ackSeqOffset: 0,
+    ackSeqBytes: 4,
+    playerCountOffset: 4,
     playerCountBytes: 1,
+    headerBytes: 5,
     playerIndexOffset: 0,
     playerStartIndexOffset: 2,
     playerSegmentCountOffset: 4,
