@@ -76,6 +76,8 @@ export class Game {
     private moveSpeed: number = 0.3;
     private subTickRate: number = 3;
     private tailInterval: number = 1; // send the volatile tail every N ticks (1 = 60Hz); raise to cut bandwidth (clients predict/interpolate the gaps)
+    private lagCompEnabled: boolean = true; // apply turns at the client's stamped tick (cancels the prediction corner-snap)
+    private maxRewindTicks: number = 15;    // cap on how far back a turn may be rewound (~250ms), for sanity / anti-abuse
     private aspectRatio: number = 1.5;
     private fieldShape: FieldShape = "rectangle";
     private lineWidth: number = 0.002;
@@ -766,7 +768,7 @@ export class Game {
         return this.tick;
     }
 
-    processInput(id: string, direction: Direction, seq: number) {
+    processInput(id: string, direction: Direction, seq: number, clientTick: number) {
         if (!this.players.has(id)) {
             return;
         }
@@ -781,11 +783,49 @@ export class Game {
             return;
         }
 
-        if (this.addSegment(player, direction)) {
+        if (this.turnWithLagComp(player, direction, clientTick)) {
             for (const receiver of this.players.values()) {
                 this.sendGameState(receiver, [player]);
             }
         }
+    }
+
+    // Applies a turn at the tick the client perceived, rather than at arrival: rewinds the head back
+    // along the current segment to where it was at clientTick, turns there, then replays the rewound
+    // distance in the new direction (re-checking collisions). The turn point then matches the client's
+    // prediction, cancelling the corner-snap. Rewind is bounded by the segment length and maxRewindTicks.
+    private turnWithLagComp(player: Player, direction: Direction, clientTick: number): boolean {
+        const rewindTicks = this.lagCompEnabled && clientTick > 0
+            ? Math.min(Math.max(this.tick - clientTick, 0), this.maxRewindTicks)
+            : 0;
+        if (rewindTicks <= 0) {
+            return this.addSegment(player, direction);
+        }
+
+        // Mirror addSegment's guards before mutating anything (a turn must change axis).
+        if (player.dead || player.segments.length >= uint16Max) {
+            return false;
+        }
+        const lastDirection = directionToVector(player.direction);
+        if ((direction === Direction.Right && lastDirection[1] === 0.0) ||
+            (direction === Direction.Up && lastDirection[0] === 0.0) ||
+            (direction === Direction.Down && lastDirection[0] === 0.0) ||
+            (direction === Direction.Left && lastDirection[1] === 0.0)) {
+            return false;
+        }
+
+        const last = player.segments[player.segments.length - 1];
+        const start = last[0];
+        const head = last[1];
+        const maxRewind = Math.hypot(head[0] - start[0], head[1] - start[1]);
+        const rewoundDistance = Math.min(this.moveSpeed * rewindTicks / tickRate, maxRewind);
+
+        head[0] -= lastDirection[0] * rewoundDistance;
+        head[1] -= lastDirection[1] * rewoundDistance;
+
+        this.addSegment(player, direction);
+        this.movePlayer(player, rewoundDistance);
+        return true;
     }
 
     private resetSentSegments(player: Player) {

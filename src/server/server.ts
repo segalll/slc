@@ -139,7 +139,7 @@ io.on("connection", (socket) => {
 
     socket.on("input", (msg) => {
         if (msg && isDirection(msg.d) && Number.isInteger(msg.s)) {
-            game.processInput(session.userID, msg.d, msg.s);
+            game.processInput(session.userID, msg.d, msg.s, Number.isFinite(msg.t) ? msg.t : 0);
         }
     })
 

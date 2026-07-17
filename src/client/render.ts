@@ -421,16 +421,18 @@ export class Renderer {
 
     // Called on every local direction input. Assigns a sequence number, predicts the turn locally if
     // valid, and returns the sequence for the caller to send to the server.
-    onLocalTurn(direction: Direction): number {
+    onLocalTurn(direction: Direction): { seq: number; tick: number } {
         const seq = ++this.inputSeq;
+        let tick = 0; // 0 tells the server not to lag-compensate (no local prediction happened)
         const local = this.getLocalPlayer();
         if (predictLocal && this.clock?.synced && local && !local.dead && !this.inCountdown && local.segments.length > 0) {
             const dir = this.predictedDir(local);
             if (dir && isValidTurn(dir, direction)) {
-                this.pendingTurns.push({ seq, dir: direction, tick: this.clock.serverTickNow() });
+                tick = this.clock.serverTickNow();
+                this.pendingTurns.push({ seq, dir: direction, tick });
             }
         }
-        return seq;
+        return { seq, tick };
     }
 
     modifyPlayer(playerInfo: PlayerInfo) {

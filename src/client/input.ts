@@ -26,8 +26,8 @@ export class InputManager {
     }
 
     private sendDirection(direction: Direction) {
-        const seq = this.renderer.onLocalTurn(direction);
-        this.socket.emit("input", { d: direction, s: seq });
+        const { seq, tick } = this.renderer.onLocalTurn(direction);
+        this.socket.emit("input", { d: direction, s: seq, t: tick });
     }
 
     private onTouchEnd(e: TouchEvent) {
