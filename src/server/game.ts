@@ -1,5 +1,5 @@
 import { Server, type Socket } from "socket.io";
-import { coordToUint16, directionToVector, Direction, gameStatePacket, gameTailPacket, uint16Max, worldStatePacket } from "../shared/model.js";
+import { coordToUint16, directionToVector, Direction, gameStatePacket, gameTailPacket, tickRate, uint16Max, worldStatePacket } from "../shared/model.js";
 import {
     buildFieldSegments,
     getConvexHull,
@@ -73,7 +73,6 @@ export class Game {
 
     private numPartitions: number = 10; // number of partitions per axis
     private moveSpeed: number = 0.3;
-    private tickRate: number = 60;
     private subTickRate: number = 3;
     private aspectRatio: number = 1.5;
     private fieldShape: FieldShape = "rectangle";
@@ -109,7 +108,7 @@ export class Game {
         this.server = server;
         this.players = new Map<string, Player>();
         this.worldPartitions = this.createPartitionGrid();
-        setInterval(() => this.gameLoop(), 1000 / this.tickRate);
+        setInterval(() => this.gameLoop(), 1000 / tickRate);
     }
 
     getSettings(): GameSettings {
@@ -723,6 +722,7 @@ export class Game {
             this.sendGameState(this.players.get(id)!, [player]);
         }
         this.sendWorldState(socket);
+        socket.emit("self", this.players.get(id)!.index);
     }
 
     removePlayer(id: string) {
@@ -1028,7 +1028,7 @@ export class Game {
         for (const player of this.players.values()) {
             if (!player.dead) {
                 alive.push(player.id);
-                this.extendLastSegment(player, 1000 / (this.tickRate * this.subTickRate));
+                this.extendLastSegment(player, 1000 / (tickRate * this.subTickRate));
             }
         }
         return alive;

@@ -55,6 +55,8 @@ export const worldStatePacket = {
     portalPairBytes: 16
 } as const;
 
+export const tickRate = 60; // server game-loop rate; clients use it to convert ticks <-> milliseconds
+
 export const uint16Max = 0xffff;
 
 export const coordToUint16 = (value: number, min: number, max: number) => {

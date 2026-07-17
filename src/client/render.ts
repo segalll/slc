@@ -1,4 +1,4 @@
-import { gameStatePacket, gameTailPacket, uint16ToCoord, worldStatePacket } from "../shared/model";
+import { gameStatePacket, gameTailPacket, tickRate, uint16ToCoord, worldStatePacket } from "../shared/model";
 import { buildFieldSegments, getPortalCapSegments, segmentToQuad } from "../shared/geometry";
 import type { FieldShape, GameSettings, PlayerInfo, Segment } from "../shared/model";
 
@@ -12,6 +12,8 @@ interface Player {
     segments: Segment[];
     segmentCapacity: number;
     spawnPosition: [number, number] | null;
+    tailSamples: { tick: number; end: [number, number] }[]; // recent head samples for the current growing segment (remote players)
+    dead: boolean; // once dead, the final segment is authoritative and no longer interpolated
 }
 
 type Color = [number, number, number];
@@ -20,6 +22,13 @@ const floatsPerSegment = 12;
 const floatsPerGlowSegment = 18;
 const verticesPerSegment = 6;
 const initialSegmentCapacity = 64;
+
+// Remote players are rendered slightly in the past and interpolated between tail samples, so their
+// motion is smooth instead of stepping at packet rate. The local player is left on the authoritative
+// head (Phase 2b adds prediction). Tunable.
+const remoteDelayTicks = 3;   // how far behind the newest server tick remote players are drawn (~50ms)
+const playoutSlew = 0.05;     // per-frame pull of the playout clock toward its delay target
+const maxTailSamples = 16;    // per-player ring of recent (tick, head) samples for the current segment
 const neutralColor: Color = [0.65, 0.65, 0.65];
 const portalGlowWidthScale = 16;
 const portalColors: { core: Color; frontGlow: Color; backGlow: Color }[] = [
@@ -76,6 +85,9 @@ export class Renderer {
     private segmentScratch: Float32Array = new Float32Array(floatsPerSegment);
 
     private lastTailTick: number = 0;
+    private localIndex: number = -1;   // this client's own player index, or -1 until known
+    private playoutTick: number = 0;   // interpolation clock for remote players, in server-tick units
+    private lastFrameTime: number = 0;
     private renderLoopStarted: boolean = false;
     private inCountdown: boolean = false;
     private countdownTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -323,9 +335,12 @@ export class Renderer {
     prepareRound() {
         this.inCountdown = true;
         this.lastTailTick = 0;
+        this.playoutTick = 0;
         for (const player of this.players.values()) {
             player.segments = [];
             player.spawnPosition = null;
+            player.tailSamples.length = 0;
+            player.dead = false;
         }
         if (this.countdownTimeout) {
             clearTimeout(this.countdownTimeout);
@@ -334,6 +349,21 @@ export class Renderer {
             this.inCountdown = false;
             this.countdownTimeout = null;
         }, 3000);
+    }
+
+    setLocalIndex(index: number) {
+        this.localIndex = index;
+    }
+
+    markDead(id: string) {
+        const player = this.players.get(id);
+        if (player) {
+            player.dead = true;
+        }
+    }
+
+    private getLocalId(): string | undefined {
+        return this.localIndex >= 0 ? this.indexToId.get(this.localIndex) : undefined;
     }
 
     modifyPlayer(playerInfo: PlayerInfo) {
@@ -360,7 +390,9 @@ export class Renderer {
                 score: playerInfo.score,
                 segments: [],
                 segmentCapacity: 0,
-                spawnPosition: null
+                spawnPosition: null,
+                tailSamples: [],
+                dead: false
             };
             this.players.set(playerInfo.id, player);
             this.ensureSegmentCapacity(player, initialSegmentCapacity);
@@ -596,8 +628,15 @@ export class Renderer {
                 segmentOffset += gameStatePacket.segmentBytes;
             }
 
+            const prevGrowingStart = player.segments.length > 0 ? player.segments[player.segments.length - 1][0] : null;
             player.segments.splice(startIndex, player.segments.length - startIndex, ...segments);
             this.uploadPlayerSegments(player, startIndex);
+
+            // A new growing segment (turn / spawn / portal) invalidates the remote interpolation samples.
+            const growingStart = player.segments.length > 0 ? player.segments[player.segments.length - 1][0] : null;
+            if (growingStart && (!prevGrowingStart || prevGrowingStart[0] !== growingStart[0] || prevGrowingStart[1] !== growingStart[1])) {
+                player.tailSamples.length = 0;
+            }
         }
     }
 
@@ -616,6 +655,7 @@ export class Renderer {
         }
         this.lastTailTick = tick;
 
+        const localId = this.getLocalId();
         const numPlayers = view.getUint8(gameTailPacket.playerCountOffset);
         const expectedBytes = gameTailPacket.headerBytes + numPlayers * gameTailPacket.playerBytes;
         if (view.byteLength < expectedBytes) {
@@ -642,11 +682,70 @@ export class Renderer {
                 continue;
             }
 
-            player.segments[segmentIndex][1] = end;
-            this.uploadPlayerSegment(player, segmentIndex);
+            if (playerId === localId) {
+                // local player stays on the authoritative head; Phase 2b will predict it
+                player.segments[segmentIndex][1] = end;
+                this.uploadPlayerSegment(player, segmentIndex);
+            } else {
+                player.tailSamples.push({ tick, end });
+                if (player.tailSamples.length > maxTailSamples) {
+                    player.tailSamples.shift();
+                }
+            }
         }
     }
-    
+
+    // Advances the playout clock and interpolates each remote player's growing head to it.
+    private updateRemoteHeads() {
+        const now = performance.now();
+        const dt = this.lastFrameTime > 0 ? now - this.lastFrameTime : 0;
+        this.lastFrameTime = now;
+
+        if (this.lastTailTick === 0) {
+            return;
+        }
+        const target = this.lastTailTick - remoteDelayTicks;
+        if (this.playoutTick === 0) {
+            this.playoutTick = target;
+        } else {
+            this.playoutTick += dt / (1000 / tickRate);              // advance at real time, in tick units
+            this.playoutTick += (target - this.playoutTick) * playoutSlew; // correct drift toward the delay target
+        }
+
+        const localId = this.getLocalId();
+        for (const player of this.players.values()) {
+            if (player.segments.length === 0 || player.id === localId || player.dead) {
+                continue;
+            }
+            this.uploadGrowingHead(player, this.interpolateHead(player));
+        }
+    }
+
+    private interpolateHead(player: Player): [number, number] {
+        const samples = player.tailSamples;
+        const start = player.segments[player.segments.length - 1][0];
+        if (samples.length === 0 || this.playoutTick < samples[0].tick) {
+            return [start[0], start[1]];
+        }
+        for (let i = 1; i < samples.length; i++) {
+            if (this.playoutTick <= samples[i].tick) {
+                const a = samples[i - 1];
+                const b = samples[i];
+                const f = (this.playoutTick - a.tick) / (b.tick - a.tick || 1);
+                return [a.end[0] + (b.end[0] - a.end[0]) * f, a.end[1] + (b.end[1] - a.end[1]) * f];
+            }
+        }
+        const last = samples[samples.length - 1].end;
+        return [last[0], last[1]];
+    }
+
+    private uploadGrowingHead(player: Player, head: [number, number]) {
+        const last = player.segments.length - 1;
+        this.segmentToVertices([player.segments[last][0], head], this.segmentScratch, 0);
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * last, this.segmentScratch);
+    }
+
     renderLoop() {
         if (this.renderLoopStarted) {
             return;
@@ -703,6 +802,8 @@ export class Renderer {
             this.setColor(neutralColor);
             this.gl.drawArrays(this.gl.TRIANGLES, 0, verticesPerSegment * this.portalCapSegmentCount);
         }
+
+        this.updateRemoteHeads();
 
         for (const player of this.players.values()) {
             if (player.segments.length === 0) {

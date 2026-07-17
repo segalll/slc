@@ -185,6 +185,10 @@ socket.on("world_state", (buffer: ArrayBuffer) => {
     renderer.updateWorldState(buffer);
 })
 
+socket.on("self", (index: number) => {
+    renderer.setLocalIndex(index);
+})
+
 socket.on("modify_player", (playerInfo: PlayerInfo) => {
     renderer.modifyPlayer(playerInfo);
 })
@@ -198,7 +202,8 @@ socket.on("starting", () => {
     countdown.play();
 })
 
-socket.on("death", () => {
+socket.on("death", (id: string) => {
+    renderer.markDead(id);
     death.currentTime = 0;
     death.play();
 })
