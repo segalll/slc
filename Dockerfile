@@ -1,5 +1,5 @@
-# Debian (glibc) rather than Alpine (musl): the WebTransport QUIC addon only ships glibc prebuilts.
-FROM node:25-slim AS builder
+# Trixie provides glibc >= 2.38, required by the prebuilt WebTransport QUIC addon.
+FROM node:25-trixie-slim AS builder
 
 WORKDIR /app
 
@@ -8,7 +8,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:25-slim AS production
+FROM node:25-trixie-slim AS production
 
 WORKDIR /app
 
