@@ -1,5 +1,7 @@
-import { Server, type Socket } from "socket.io";
-import { coordToUint16, directionToVector, Direction, gameStatePacket, gameTailPacket, tickRate, uint16Max, worldStatePacket } from "../shared/model.js";
+import { InputSequence, encodeSnapshot, snapshotHistory } from "../shared/protocol.js";
+import type { Event, GameSync, Peer, HeadState } from "../shared/protocol.js";
+import { canTurn, turnStart } from "../shared/movement.js";
+import { coordToUint16, directionToVector, Direction, gameStatePacket, tickRate, uint16Max, worldStatePacket, isFieldShape } from "../shared/model.js";
 import {
     buildFieldSegments,
     getConvexHull,
@@ -27,10 +29,10 @@ interface Player {
     fieldPartitions: Set<number>[]; // each partition is a set of indices into segments
     dead: boolean;
 
-    socket: Socket;
+    peer: Peer;
     lastSentSegmentIndices: Map<string, number>; // per player
     pendingReliableState: boolean;
-    lastInputSeq: number; // highest input sequence processed, echoed to the client for prediction reconciliation
+    inputs: InputSequence;
 }
 
 interface PortalHit {
@@ -69,7 +71,7 @@ const colorFromHex = (hex: string): [number, number, number] => {
 }
 
 export class Game {
-    private server: Server;
+    private broadcast: (event: Event, data?: unknown) => void;
     private players: Map<string, Player>;
 
     private numPartitions: number = 10; // number of partitions per axis
@@ -103,16 +105,28 @@ export class Game {
 
     private playing: boolean = false;
     private tick: number = 0; // free-running 60Hz counter; stamps volatile packets for ordering and as the shared time base
-    private datagramWriters: Map<string, WritableStreamDefaultWriter<Uint8Array>> = new Map(); // userID -> volatile datagram channel, kept independent of player lifecycle
+    private round = 0;
+    private snapshotPage = 0;
+    private lastTime: number | null = null;
+    private accumulated = 0;
     private roundStartTime: number | null = null;
     private prevAlive: string[] = []; // list of ids of players that were alive last tick
     private nextPlayerIndex: number = 0;
 
-    constructor(server: Server) {
-        this.server = server;
+    constructor(broadcast: (event: Event, data?: unknown) => void) {
+        this.broadcast = broadcast;
         this.players = new Map<string, Player>();
         this.worldPartitions = this.createPartitionGrid();
-        setInterval(() => this.gameLoop(), 1000 / tickRate);
+    }
+
+    advance(now: number) {
+        if (this.lastTime !== null) this.accumulated += Math.min(Math.max(now - this.lastTime, 0), 250);
+        this.lastTime = now;
+        const step = 1000 / tickRate;
+        while (this.accumulated + 1e-9 >= step) {
+            this.accumulated -= step;
+            this.gameLoop();
+        }
     }
 
     getSettings(): GameSettings {
@@ -128,6 +142,9 @@ export class Game {
     }
 
     updateSettings(settings: Partial<GameSettings>) {
+        if (settings.fieldShape !== undefined && !isFieldShape(settings.fieldShape)) return;
+        if (settings.obstacles !== undefined && typeof settings.obstacles !== 'boolean') return;
+        if (settings.portals !== undefined && typeof settings.portals !== 'boolean') return;
         let moveSpeed = this.moveSpeed;
         let lineWidth = this.lineWidth;
         let aspectRatio = this.aspectRatio;
@@ -201,7 +218,7 @@ export class Game {
             this.rebuildWorldPartitions();
             this.setPortalPairs(this.portalPairs);
         }
-        this.server.emit("game_settings", this.getSettings());
+        this.broadcast("game_settings", this.getSettings());
         if ((obstaclesChanged || portalsChanged || portalGenerationChanged || fieldChanged) && !this.playing) {
             if (this.roundStartTime !== null) {
                 this.buildRoundWorld();
@@ -639,6 +656,7 @@ export class Game {
         if (this.playing || this.roundStartTime !== null || this.players.size < 2) {
             return;
         }
+        this.round++;
         this.buildRoundWorld();
         this.sendWorldState();
 
@@ -656,33 +674,35 @@ export class Game {
 
             player.dead = false;
             player.pendingReliableState = false;
+            player.inputs = new InputSequence();
 
             for (const id of this.players.keys()) {
                 player.lastSentSegmentIndices.set(id, 0);
             }
         }
 
-        this.server.emit("starting");
+        this.roundStartTime = this.tick + Game.countdownDuration * tickRate / 1000;
+        this.broadcast("starting", { round: this.round, tick: this.tick, startsAt: this.roundStartTime });
         for (const receiver of this.players.values()) {
             this.sendGameState(receiver);
         }
 
         this.prevAlive = Array.from(this.players.keys());
-        this.roundStartTime = Date.now() + Game.countdownDuration;
+        this.sendSnapshots();
     }
 
-    addPlayer(socket: Socket, id: string, name: string, color: string) {
+    addPlayer(peer: Peer, id: string, name: string, color: string) {
         if (!this.players.has(id)) {
             const colorVector = colorFromHex(color);
             const score = 0;
             if (this.nextPlayerIndex > uint16Max) {
-                socket.disconnect(true);
+                peer.close();
                 return;
             }
             const index = this.nextPlayerIndex++;
 
             // introduce new player to existing players
-            socket.broadcast.emit("modify_player", {
+            this.broadcast("modify_player", {
                 id,
                 index,
                 name,
@@ -705,29 +725,27 @@ export class Game {
                 fieldPartitions,
                 dead: true,
 
-                socket,
+                peer,
                 lastSentSegmentIndices: new Map<string, number>(),
                 pendingReliableState: false,
-                lastInputSeq: 0
+                inputs: new InputSequence()
             });
         } else {
             const player = this.players.get(id)!;
-            player.socket = socket;
+            player.peer = peer;
             this.resetSentSegments(player);
         }
 
-        for (const player of this.players.values()) {
-            socket.emit("modify_player", {
-                id: player.id,
-                index: player.index,
-                name: player.name,
-                color: player.color,
-                score: player.score
-            } as PlayerInfo);
-            this.sendGameState(this.players.get(id)!, [player]);
-        }
-        this.sendWorldState(socket);
-        socket.emit("self", this.players.get(id)!.index);
+    }
+
+    getSync(id: string): GameSync {
+        const receiver = this.players.get(id)!;
+        for (const player of this.players.values()) receiver.lastSentSegmentIndices.set(player.id, Math.max(0, player.segments.length - 1));
+        return structuredClone({ round: this.round, tick: this.tick, ack: receiver.inputs.ack,
+            playing: this.playing, startsAt: this.roundStartTime, settings: this.getSettings(), self: receiver.index,
+            world: this.worldSegments, portals: this.portalPairs,
+            players: [...this.players.values()].map(p => ({ id: p.id, index: p.index, name: p.name,
+                color: p.color, score: p.score, segments: p.segments, direction: p.direction, dead: p.dead })) });
     }
 
     removePlayer(id: string) {
@@ -735,11 +753,10 @@ export class Game {
             return;
         }
         this.players.delete(id);
-        this.datagramWriters.delete(id);
         for (const otherPlayer of this.players.values()) {
             otherPlayer.lastSentSegmentIndices.delete(id);
         }
-        this.server.emit("remove", id);
+        this.broadcast("remove", id);
 
         if (this.players.size === 0) {
             this.moveSpeed = Game.defaultMoveSpeed;
@@ -756,25 +773,29 @@ export class Game {
         }
     }
 
-    setDatagramWriter(id: string, writer: WritableStreamDefaultWriter<Uint8Array> | null) {
-        if (writer) {
-            this.datagramWriters.set(id, writer);
-        } else {
-            this.datagramWriters.delete(id);
-        }
-    }
-
     getTick() {
         return this.tick;
     }
 
-    processInput(id: string, direction: Direction, seq: number, clientTick: number) {
+    resetInputs(id: string) {
+        const player = this.players.get(id)!;
+        const ack = player.inputs.ack;
+        player.inputs = new InputSequence();
+        player.inputs.ack = ack;
+    }
+
+    processInputs(id: string, batch: any) {
+        const player = this.players.get(id);
+        if (!player || !batch || batch.round !== this.round) return;
+        for (const turn of player.inputs.receive(batch.turns)) this.processInput(id, turn.d, turn.t);
+    }
+
+    private processInput(id: string, direction: Direction, clientTick: number) {
         if (!this.players.has(id)) {
             return;
         }
 
         const player = this.players.get(id)!;
-        player.lastInputSeq = seq;
         if (!this.playing) {
             player.startingDirection = direction;
             return;
@@ -807,12 +828,7 @@ export class Game {
             return false;
         }
         const lastDirection = directionToVector(player.direction);
-        if ((direction === Direction.Right && lastDirection[1] === 0.0) ||
-            (direction === Direction.Up && lastDirection[0] === 0.0) ||
-            (direction === Direction.Down && lastDirection[0] === 0.0) ||
-            (direction === Direction.Left && lastDirection[1] === 0.0)) {
-            return false;
-        }
+        if (!canTurn(player.direction, direction)) return false;
 
         const last = player.segments[player.segments.length - 1];
         const start = last[0];
@@ -842,37 +858,11 @@ export class Game {
             return false;
         }
 
-        const lastDirection = directionToVector(player.direction);
-        if ((direction === Direction.Right && lastDirection[1] === 0.0) ||
-            (direction === Direction.Up && lastDirection[0] === 0.0) ||
-            (direction === Direction.Down && lastDirection[0] === 0.0) ||
-            (direction === Direction.Left && lastDirection[1] === 0.0)) {
-            return false;
-        }
-
-        player.direction = direction;
+        if (!canTurn(player.direction, direction)) return false;
         player.pendingReliableState = true;
-
         const lastEnd = player.segments[player.segments.length - 1][1];
-        const newPoint: Point = [lastEnd[0], lastEnd[1]];
-        switch (direction) {
-            case Direction.Left:
-                newPoint[0] -= this.lineWidth;
-                newPoint[1] -= lastDirection[1] * this.lineWidth;
-                break;
-            case Direction.Right:
-                newPoint[0] += this.lineWidth;
-                newPoint[1] -= lastDirection[1] * this.lineWidth;
-                break;
-            case Direction.Up:
-                newPoint[1] += this.lineWidth;
-                newPoint[0] -= lastDirection[0] * this.lineWidth;
-                break;
-            case Direction.Down:
-                newPoint[1] -= this.lineWidth;
-                newPoint[0] -= lastDirection[0] * this.lineWidth;
-                break;
-        }
+        const newPoint = turnStart(lastEnd, player.direction, direction, this.lineWidth);
+        player.direction = direction;
         player.segments.push([ newPoint, [newPoint[0], newPoint[1]] ] as Segment);
         return true;
     }
@@ -975,7 +965,8 @@ export class Game {
         const buffer = new ArrayBuffer(headerSize + totalSegments * gameStatePacket.segmentBytes);
         const view = new DataView(buffer);
 
-        view.setUint32(gameStatePacket.ackSeqOffset, receiver.lastInputSeq >>> 0, true);
+        view.setUint32(gameStatePacket.roundOffset, this.round, true);
+        view.setUint32(gameStatePacket.tickOffset, this.tick, true);
         view.setUint8(gameStatePacket.playerCountOffset, playerData.length);
 
         let offset = gameStatePacket.headerBytes;
@@ -993,10 +984,10 @@ export class Game {
             }
         }
 
-        receiver.socket.emit("game_state", buffer);
+        receiver.peer.send("game_state", buffer);
     }
 
-    private sendWorldState(socket?: Socket) {
+    private sendWorldState() {
         const portalPairCountOffset = worldStatePacket.segmentCountBytes + this.worldSegments.length * worldStatePacket.segmentBytes;
         const buffer = new ArrayBuffer(
             portalPairCountOffset +
@@ -1020,55 +1011,19 @@ export class Game {
             offset += worldStatePacket.portalPairBytes;
         }
 
-        if (socket) {
-            socket.emit("world_state", buffer);
-        } else {
-            this.server.emit("world_state", buffer);
-        }
+        this.broadcast("world_state", buffer);
     }
 
-    private sendGameTail(reliable: boolean = false) {
-        const playerData: { index: number; segmentIndex: number; end: Point }[] = [];
-
-        for (const source of this.players.values()) {
-            if (source.dead || source.segments.length === 0) {
-                continue;
-            }
-            const segmentIndex = source.segments.length - 1;
-            playerData.push({
-                index: source.index,
-                segmentIndex,
-                end: source.segments[segmentIndex][1]
-            });
-        }
-
-        if (playerData.length === 0) return;
-
-        const buffer = new ArrayBuffer(gameTailPacket.headerBytes + playerData.length * gameTailPacket.playerBytes);
-        const view = new DataView(buffer);
-
-        view.setUint32(gameTailPacket.tickOffset, this.tick >>> 0, true);
-        view.setUint8(gameTailPacket.playerCountOffset, playerData.length);
-
-        let offset = gameTailPacket.headerBytes;
-        for (const { index, segmentIndex, end } of playerData) {
-            view.setUint16(offset + gameTailPacket.playerIndexOffset, index, true);
-            view.setUint16(offset + gameTailPacket.playerSegmentIndexOffset, segmentIndex, true);
-            view.setUint16(offset + gameTailPacket.playerEndXOffset, coordToUint16(end[0], -this.aspectRatio, this.aspectRatio), true);
-            view.setUint16(offset + gameTailPacket.playerEndYOffset, coordToUint16(end[1], -1.0, 1.0), true);
-            offset += gameTailPacket.playerBytes;
-        }
-
-        const datagram = new Uint8Array(buffer);
+    sendSnapshots() {
+        const players: HeadState[] = [...this.players.values()].filter(p => p.segments.length > 0).map(p => ({
+            index: p.index, segmentIndex: p.segments.length - 1, direction: p.direction, dead: p.dead,
+            segments: p.segments.slice(-snapshotHistory)
+        }));
+        // 30 heads with three recent segments fit below 1 KB, including framing.
+        const start = this.snapshotPage++ % Math.max(1, Math.ceil(players.length / 30)) * 30;
         for (const receiver of this.players.values()) {
-            const writer = this.datagramWriters.get(receiver.id);
-            if (reliable) {
-                receiver.socket.emit("game_tail", buffer);
-            } else if (writer) {
-                writer.write(datagram).catch(() => {});
-            } else {
-                receiver.socket.volatile.emit("game_tail", buffer);
-            }
+            receiver.peer.send('game_tail', encodeSnapshot({ round: this.round, tick: this.tick,
+                ack: receiver.inputs.ack, playing: this.playing, players: players.slice(start, start + 30) }, this.aspectRatio), true);
         }
     }
 
@@ -1102,7 +1057,7 @@ export class Game {
         const aliveIds = new Set(alive);
         for (const id of this.prevAlive) {
             if (!aliveIds.has(id) && this.players.has(id)) {
-                this.server.emit("death", id);
+                this.broadcast("death", id);
             }
         }
     }
@@ -1110,11 +1065,12 @@ export class Game {
     private gameLoop() {
         this.tick++;
 
-        if (this.roundStartTime !== null && Date.now() >= this.roundStartTime) {
+        if (this.roundStartTime !== null && this.tick >= this.roundStartTime) {
             this.beginPlaying();
         }
 
         if (!this.playing) {
+            if (this.tick % 6 === 0) this.sendSnapshots();
             return;
         }
 
@@ -1126,12 +1082,12 @@ export class Game {
 
                 const winners = (alive.length === 1 ? alive : this.prevAlive).filter(id => this.players.has(id));
                 if (winners.length > 0) {
-                    this.server.emit("round_over");
+                    this.broadcast("round_over");
                 }
                 for (const id of winners) {
                     const player = this.players.get(id)!;
                     player.score++;
-                    this.server.emit("modify_player", {
+                    this.broadcast("modify_player", {
                         id,
                         index: player.index,
                         name: player.name,
@@ -1158,6 +1114,7 @@ export class Game {
                 }
 
                 this.prevAlive = alive;
+                this.sendSnapshots();
                 return;
             }
             this.prevAlive = alive;
@@ -1171,7 +1128,7 @@ export class Game {
             }
         }
         if (reliableSources.length > 0 || this.tick % this.tailInterval === 0) {
-            this.sendGameTail(reliableSources.length > 0);
+            this.sendSnapshots();
         }
         for (const player of reliableSources) {
             player.pendingReliableState = false;

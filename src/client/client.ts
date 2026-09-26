@@ -2,13 +2,15 @@ import { io } from "socket.io-client";
 import { Renderer } from "./render";
 import { InputManager } from "./input";
 import { Clock } from "./clock";
-import { connectWebTransport } from "./webtransport";
-import type { GameSettings, PlayerInfo, WebTransportInfo } from "../shared/model";
+import { Connection } from "./connection.js";
+import type { GameSync } from "../shared/protocol.js";
+import type { GameSettings, PlayerInfo } from "../shared/model";
 
-const socket = io(window.location.toString(), {
+const rawSocket = io(window.location.toString(), {
     autoConnect: false,
     transports: ["websocket"]
 });
+const socket = new Connection(rawSocket);
 
 const hslToRgbHex = (h: number, s: number, l: number) => {
     const c = (1 - Math.abs(2 * l - 1)) * s;
@@ -145,13 +147,12 @@ socket.on("session", (sessionID: string) => {
 
 socket.on("connect", () => {
     document.getElementById("join-data")?.remove();
-    socket.emit("join");
     clock.start(socket);
     inputManager.start();
     renderer.renderLoop();
 })
 
-socket.on("game_settings", (gameSettings: GameSettings) => {
+const applySettings = (gameSettings: GameSettings) => {
     localStorage.setItem("aspectRatio", gameSettings.aspectRatio.toString());
     renderer.updateGameSettings(gameSettings);
     speedSlider.value = gameSettings.moveSpeed.toString();
@@ -162,7 +163,8 @@ socket.on("game_settings", (gameSettings: GameSettings) => {
     portalsCheckbox.checked = gameSettings.portals;
     maxPortalsSlider.value = gameSettings.maxPortals.toString();
     updateSettingsDisplay();
-})
+};
+socket.on("game_settings", applySettings);
 
 socket.on("connect_error", err => {
     if (err.message === "invalid session") {
@@ -175,22 +177,17 @@ socket.on("game_state", (buffer: ArrayBuffer) => {
     renderer.updateGameState(buffer);
 })
 
-socket.on("game_tail", (buffer: ArrayBuffer) => {
-    renderer.updateGameTail(buffer);
+socket.on("game_tail", state => {
+    renderer.updateGameTail(state);
 })
 
-let webTransport: WebTransport | null = null;
-socket.on("webtransport", (info: WebTransportInfo) => {
-    try { webTransport?.close(); } catch { /* already closed */ }
-    webTransport = connectWebTransport(info, (data) => renderer.updateGameTail(data));
-})
+socket.on('sync', (state: GameSync) => {
+    renderer.synchronize(state);
+    applySettings(state.settings);
+});
 
 socket.on("world_state", (buffer: ArrayBuffer) => {
     renderer.updateWorldState(buffer);
-})
-
-socket.on("self", (index: number) => {
-    renderer.setLocalIndex(index);
 })
 
 socket.on("modify_player", (playerInfo: PlayerInfo) => {
@@ -201,8 +198,8 @@ socket.on("remove", (id: string) => {
     renderer.removePlayer(id);
 })
 
-socket.on("starting", () => {
-    renderer.prepareRound();
+socket.on("starting", (info) => {
+    renderer.prepareRound(info);
     countdown.play();
 })
 

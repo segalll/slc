@@ -1,8 +1,8 @@
-import type { Socket } from "socket.io-client";
+import type { Connection } from "./connection.js";
 import { tickRate } from "../shared/model";
 
 const msPerTick = 1000 / tickRate;
-const pingIntervalMs = 2000;
+const pingIntervalMs = 1000;
 const bestSampleMaxAgeMs = 10000;
 
 // Estimates the current server tick from the client clock via ping/pong RTT, keeping the offset from
@@ -14,11 +14,12 @@ export class Clock {
     private bestRttTime = 0;
     private started = false;
 
-    start(socket: Socket) {
-        if (this.started) return;
+    start(socket: Connection) {
+        this.bestRtt = Infinity;
+        if (this.started) { socket.emit("time_sync", { c: performance.now() }, true); return; }
         this.started = true;
         socket.on("time_sync", (msg: { c: number; s: number }) => this.onPong(msg.c, msg.s));
-        const ping = () => socket.volatile.emit("time_sync", performance.now()); // drop stale pings buffered during a disconnect
+        const ping = () => socket.emit("time_sync", { c: performance.now() }, true); // drop stale pings buffered during a disconnect
         ping();
         setInterval(ping, pingIntervalMs);
     }

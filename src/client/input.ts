@@ -1,16 +1,16 @@
-import type { Socket } from "socket.io-client";
+import type { Connection } from "./connection.js";
 import { Direction } from "../shared/model";
 import type { Renderer } from "./render";
 
 export class InputManager {
-    private socket: Socket;
+    private socket: Connection;
     private renderer: Renderer;
     private keyMap: Map<string, Direction>;
     private startX: number = 0;
     private startY: number = 0;
     private started: boolean = false;
 
-    constructor(socket: Socket, renderer: Renderer) {
+    constructor(socket: Connection, renderer: Renderer) {
         this.socket = socket;
         this.renderer = renderer;
         this.keyMap = new Map<string, Direction>();
@@ -26,6 +26,7 @@ export class InputManager {
     }
 
     private sendDirection(direction: Direction) {
+        if (!this.socket.connected) return;
         const { seq, tick } = this.renderer.onLocalTurn(direction);
         this.socket.emit("input", { d: direction, s: seq, t: tick });
     }
@@ -45,7 +46,8 @@ export class InputManager {
             this.socket.emit("start");
         }
 
-        if (this.keyMap.has(e.key)) {
+        if (!e.repeat && this.keyMap.has(e.key)) {
+            e.preventDefault();
             this.sendDirection(this.keyMap.get(e.key)!);
         }
     }

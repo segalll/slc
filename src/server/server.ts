@@ -3,171 +3,98 @@ import { Server, type Socket } from "socket.io";
 import { Server as HttpServer } from "http";
 import { randomBytes } from "crypto";
 import { Game } from "./game.js";
+import { GameSession } from "./session.js";
 import { startWebTransport } from "./webtransport.js";
-import { isDirection, isFieldShape } from "../shared/model.js";
-import type { GameSettings } from "../shared/model.js";
+import { events } from "../shared/protocol.js";
+import type { Event, Peer } from "../shared/protocol.js";
 
-interface SessionSocket extends Socket {
-    sessionID: string;
-}
-
-const randomID = () => randomBytes(8).toString("hex");
-const isUsername = (value: unknown): value is string => {
-    return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 32;
-}
-const isHexColor = (value: unknown): value is string => {
-    return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
-}
-const parseSettingsUpdate = (value: unknown): Partial<GameSettings> | null => {
-    if (typeof value !== "object" || value === null) {
-        return null;
-    }
-
-    const payload = value as Record<string, unknown>;
-    const settings: Partial<GameSettings> = {};
-    if (payload.moveSpeed !== undefined) {
-        if (typeof payload.moveSpeed !== "number") return null;
-        settings.moveSpeed = payload.moveSpeed;
-    }
-    if (payload.lineWidth !== undefined) {
-        if (typeof payload.lineWidth !== "number") return null;
-        settings.lineWidth = payload.lineWidth;
-    }
-    if (payload.maxPortals !== undefined) {
-        if (typeof payload.maxPortals !== "number") return null;
-        settings.maxPortals = payload.maxPortals;
-    }
-    if (payload.aspectRatio !== undefined) {
-        if (typeof payload.aspectRatio !== "number") return null;
-        settings.aspectRatio = payload.aspectRatio;
-    }
-    if (payload.fieldShape !== undefined) {
-        if (!isFieldShape(payload.fieldShape)) return null;
-        settings.fieldShape = payload.fieldShape;
-    }
-    if (payload.obstacles !== undefined) {
-        if (typeof payload.obstacles !== "boolean") return null;
-        settings.obstacles = payload.obstacles;
-    }
-    if (payload.portals !== undefined) {
-        if (typeof payload.portals !== "boolean") return null;
-        settings.portals = payload.portals;
-    }
-    return settings;
-}
-
+const randomID = () => randomBytes(16).toString("hex");
 const app = express();
-const port = process.env.PORT || 9001;
-app.set("port", port);
-
 const http = new HttpServer(app);
 const io = new Server(http);
-
 app.use(express.static("dist"));
 
 interface Session {
-    sessionID: string;
-    userID: string;
-    username: string;
-    color: string;
-    socket: SessionSocket | null;
-    generation: number;
+    game: GameSession;
+    socket: Socket | null;
 }
-
-const sessionStore = new Map<string, Session>();
+const sessions = new Map<string, Session>();
+const tokens = new Map<string, { sessionID: string; expires: number }>();
+const game = new Game((event, data) => {
+    for (const session of sessions.values()) session.game.send(event, data);
+});
+setInterval(() => game.advance(performance.now()), 4);
 
 io.use((socket, next) => {
-    const sessionSocket = socket as SessionSocket;
-    const sessionID = socket.handshake.auth.sessionID;
-    if (typeof sessionID === "string") {
-        const session = sessionStore.get(sessionID);
-        if (session) {
-            sessionSocket.sessionID = sessionID;
-            return next();
+    let sessionID = socket.handshake.auth.sessionID;
+    if (typeof sessionID !== 'string' || !sessions.has(sessionID)) {
+        const { username, color } = socket.handshake.auth;
+        if (typeof username !== 'string' || !username.trim() || username.trim().length > 32 ||
+            typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+            return next(new Error('invalid session'));
         }
+        sessionID = randomID();
+        sessions.set(sessionID, { game: new GameSession(game, randomID(), username.trim(), color), socket: null });
     }
-    const username = socket.handshake.auth.username;
-    const color = socket.handshake.auth.color;
-    if (!isUsername(username) || !isHexColor(color)) {
-        return next(new Error("invalid session"));
-    }
-    sessionSocket.sessionID = randomID();
-    sessionStore.set(sessionSocket.sessionID, {
-        sessionID: sessionSocket.sessionID,
-        userID: randomID(),
-        username: username.trim(),
-        color,
-        socket: null,
-        generation: 0
-    });
+    socket.data.sessionID = sessionID;
     next();
-})
-
-const game = new Game(io);
-
-const wtPort = await startWebTransport({
-    resolveToken: (token) => sessionStore.get(token)?.userID ?? null,
-    onWriter: (userID, writer) => game.setDatagramWriter(userID, writer)
 });
 
-const timeout = 3000; // ms
+const wtPort = await startWebTransport({
+    resolveToken(token) {
+        const entry = tokens.get(token);
+        return entry && entry.expires > performance.now() && sessions.has(entry.sessionID) ? entry.sessionID : null;
+    },
+    connect(sessionID, peer) {
+        const session = sessions.get(sessionID);
+        if (!session) { peer.close(); return () => {}; }
+        session.game.attach(peer, 'webtransport');
+        return message => session.game.receive(peer, message);
+    },
+    disconnect(sessionID, peer) { sessions.get(sessionID)?.game.detach(peer); }
+});
 
-io.on("connection", (socket) => {
-    const sessionSocket = socket as SessionSocket;
-    const session = sessionStore.get(sessionSocket.sessionID)!;
+io.on('connection', socket => {
+    const sessionID = socket.data.sessionID as string;
+    const session = sessions.get(sessionID)!;
     session.socket?.disconnect(true);
-    session.socket = sessionSocket;
-    session.generation++;
-    socket.emit("session", session.sessionID);
+    session.socket = socket;
+    const peer: Peer = {
+        send(event, data, volatile) {
+            if (!socket.connected) return;
+            if (volatile) socket.volatile.emit(event, data);
+            else socket.emit(event, data);
+        },
+        close() { socket.disconnect(true); }
+    };
+    socket.emit('session', sessionID);
     if (wtPort !== null) {
-        socket.emit("webtransport", { port: wtPort, token: session.sessionID });
+        const token = randomID();
+        tokens.set(token, { sessionID, expires: performance.now() + 5 * 60_000 });
+        socket.emit('webtransport', { port: wtPort, token });
     }
+    socket.on('join', () => session.game.attach(peer, 'websocket'));
+    socket.on('fallback', () => session.game.fallback(peer));
+    socket.onAny((event: string, data: unknown) => {
+        if (event !== 'join' && events.includes(event as Event)) session.game.receive(peer, { event: event as Event, data });
+    });
+    socket.on('disconnect', () => {
+        if (session.socket === socket) session.socket = null;
+        session.game.detach(peer);
+    });
+});
 
-    console.log(`Connection | ID: ${session.userID}`);
-    socket.on("join", () => {
-        console.log(`Join | ID: ${session.userID}`);
-        socket.emit("game_settings", game.getSettings());
-        game.addPlayer(socket, session.userID, session.username, session.color);
-    })
-
-    socket.on("update_settings", (settings) => {
-        const parsedSettings = parseSettingsUpdate(settings);
-        if (parsedSettings) {
-            game.updateSettings(parsedSettings);
+setInterval(() => {
+    const now = performance.now();
+    for (const [id, session] of sessions) {
+        if (session.game.checkHealth(now)) {
+            session.game.close();
+            game.removePlayer(session.game.id);
+            sessions.delete(id);
         }
-    })
+    }
+    for (const [token, entry] of tokens) if (entry.expires < now) tokens.delete(token);
+}, 1000);
 
-    socket.on("input", (msg) => {
-        if (msg && isDirection(msg.d) && Number.isInteger(msg.s)) {
-            game.processInput(session.userID, msg.d, msg.s, Number.isFinite(msg.t) ? msg.t : 0);
-        }
-    })
-
-    socket.on("time_sync", (clientTime) => {
-        socket.emit("time_sync", { c: clientTime, s: game.getTick() });
-    })
-
-    socket.on("disconnect", () => {
-        console.log(`Disconnect | ID: ${session.userID}`);
-        if (session.socket !== sessionSocket) {
-            return;
-        }
-        session.socket = null;
-        const generation = ++session.generation;
-        setTimeout(() => {
-            if (session.socket === null && session.generation === generation) {
-                sessionStore.delete(session.sessionID);
-                game.removePlayer(session.userID);
-            }
-        }, timeout)
-    })
-
-    socket.on("start", () => {
-        game.startRound();
-    })
-
-})
-
-http.listen(port, () => {
-    console.log(`listening on *:${port}`);
-})
+const port = Number(process.env.PORT) || 9001;
+http.listen(port, () => console.log(`listening on *:${port}`));

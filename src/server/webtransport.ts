@@ -3,17 +3,20 @@ import { randomBytes } from "crypto";
 import { Http3Server } from "@fails-components/webtransport";
 import type { WebTransportSession } from "@fails-components/webtransport";
 
+import { StreamPeer } from "../shared/channel.js";
+import { MessageDecoder, readMessages } from "../shared/protocol.js";
+import type { Peer, Message } from "../shared/protocol.js";
+
 interface WebTransportHandlers {
-    resolveToken: (token: string) => string | null; // session token -> userID, or null to reject
-    onWriter: (userID: string, writer: WritableStreamDefaultWriter<Uint8Array> | null) => void;
+    resolveToken: (token: string) => string | null;
+    connect: (userID: string, peer: Peer) => (message: Message) => void;
+    disconnect: (userID: string, peer: Peer) => void;
 }
 
 const sessionPath = "/tail";
 
-// Carries the volatile game_tail over QUIC datagrams. Reached directly on its own UDP port
-// (Caddy can't proxy WebTransport), reusing the certificate Caddy issues for the domain.
-// Strictly optional: any failure returns null and the game keeps sending the tail over the
-// websocket exactly as before. Returns the port clients should connect to, or null if disabled.
+// A direct HTTP/3 listener, using the deployment's existing certificate.
+// Startup failure leaves Socket.IO available as the compatibility transport.
 export async function startWebTransport(handlers: WebTransportHandlers): Promise<number | null> {
     const port = Number(process.env.WT_PORT) || 9002;
     const certPath = process.env.WT_CERT;
@@ -40,6 +43,7 @@ export async function startWebTransport(handlers: WebTransportHandlers): Promise
         ]);
         if (!ready) {
             console.error("WebTransport disabled: server did not become ready");
+            server.stopServer();
             return null;
         }
 
@@ -89,40 +93,42 @@ function watchCertificate(certPath: string, keyPath: string, server: Http3Server
 }
 
 async function acceptSessions(server: Http3Server, handlers: WebTransportHandlers) {
-    // Tracks the live writer per user so a closing session never clears a newer one.
-    const current = new Map<string, WritableStreamDefaultWriter<Uint8Array>>();
     const reader = server.sessionStream(sessionPath).getReader();
     for (;;) {
         const { value: session, done } = await reader.read();
         if (done) break;
-        bindSession(session, handlers, current).catch(() => {});
+        bindSession(session, handlers).catch(() => session.close());
     }
 }
 
-async function bindSession(
-    session: WebTransportSession,
-    handlers: WebTransportHandlers,
-    current: Map<string, WritableStreamDefaultWriter<Uint8Array>>
-) {
+async function bindSession(session: WebTransportSession, handlers: WebTransportHandlers) {
     const userID = (session.userData as { userID?: string } | null)?.userID;
-    if (!userID) {
+    if (!userID) { session.close(); return; }
+    // Bound sessions whose client never opens the gameplay stream.
+    const timeout = setTimeout(() => session.close(), 5000);
+    await session.ready;
+    const reader = session.incomingBidirectionalStreams.getReader();
+    const { value: stream, done } = await reader.read();
+    reader.releaseLock();
+    clearTimeout(timeout);
+    if (done || !stream) { session.close(); return; }
+    const peer = new StreamPeer(stream.writable, session.datagrams, () => {
         session.close();
-        return;
-    }
-    try {
-        await session.ready;
-    } catch {
-        return;
-    }
-
-    const writer = session.datagrams.createWritable().getWriter() as WritableStreamDefaultWriter<Uint8Array>;
-    current.set(userID, writer);
-    handlers.onWriter(userID, writer);
-
-    session.closed.catch(() => {}).finally(() => {
-        if (current.get(userID) === writer) {
-            current.delete(userID);
-            handlers.onWriter(userID, null);
-        }
+        handlers.disconnect(userID, peer);
     });
+    const receive = handlers.connect(userID, peer);
+    session.closed.catch(() => {}).finally(() => peer.close());
+    readMessages(stream.readable, receive).catch(() => {}).finally(() => peer.close());
+    const datagrams = session.datagrams.readable.getReader();
+    try {
+        for (;;) {
+            const { value, done } = await datagrams.read();
+            if (done) break;
+            const decoder = new MessageDecoder();
+            for (const message of decoder.push(value)) {
+                if (message.event === 'input' || message.event === 'time_sync') receive(message);
+            }
+            decoder.finish();
+        }
+    } finally { datagrams.releaseLock(); peer.close(); }
 }

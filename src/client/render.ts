@@ -1,7 +1,11 @@
-import { Direction, directionToVector, gameStatePacket, gameTailPacket, tickRate, uint16ToCoord, worldStatePacket } from "../shared/model";
+import { Direction, gameStatePacket, uint16ToCoord, worldStatePacket } from "../shared/model";
 import { buildFieldSegments, getPortalCapSegments, segmentToQuad } from "../shared/geometry";
 import type { FieldShape, GameSettings, PlayerInfo, Segment } from "../shared/model";
 import type { Clock } from "./clock";
+import { MotionHistory, PlayoutClock } from "./motion.js";
+import { snapshotHistory, inputWindow } from "../shared/protocol.js";
+import type { GameSync, Snapshot, Turn } from "../shared/protocol.js";
+import { canTurn, predictTrail } from "../shared/movement.js";
 
 interface Player {
     id: string;
@@ -13,7 +17,8 @@ interface Player {
     segments: Segment[];
     segmentCapacity: number;
     spawnPosition: [number, number] | null;
-    tailSamples: { tick: number; end: [number, number] }[]; // recent head samples for the current growing segment (remote players)
+    motion: MotionHistory;
+    renderCount: number;
     dead: boolean; // once dead, the final segment is authoritative and no longer interpolated
 }
 
@@ -24,30 +29,6 @@ const floatsPerGlowSegment = 18;
 const verticesPerSegment = 6;
 const initialSegmentCapacity = 64;
 
-// Remote players are rendered slightly in the past and interpolated between tail samples, so their
-// motion is smooth instead of stepping at packet rate. The local player is left on the authoritative
-// head (Phase 2b adds prediction). Tunable.
-const remoteDelayTicks = 3;   // how far behind the newest server tick remote players are drawn (~50ms)
-const playoutSlew = 0.05;     // per-frame pull of the playout clock toward its delay target
-const maxTailSamples = 16;    // per-player ring of recent (tick, head) samples for the current segment
-
-const predictLocal = true;    // client-side prediction of the local player; set false to render it authoritatively
-const secondsPerTick = 1 / tickRate;
-
-// Axis-aligned unit vector of a movement delta, or null if too small to tell (just spawned/turned).
-const axisUnit = (dx: number, dy: number): [number, number] | null => {
-    const adx = Math.abs(dx);
-    const ady = Math.abs(dy);
-    if (adx < 1e-9 && ady < 1e-9) return null;
-    return adx >= ady ? [Math.sign(dx), 0] : [0, Math.sign(dy)];
-};
-
-// Matches the server's rule: a turn must change axis (no reversing or continuing along the same axis).
-const isValidTurn = (dir: [number, number], turn: Direction): boolean => {
-    return dir[1] === 0
-        ? turn === Direction.Up || turn === Direction.Down
-        : turn === Direction.Left || turn === Direction.Right;
-};
 const neutralColor: Color = [0.65, 0.65, 0.65];
 const portalGlowWidthScale = 16;
 const portalColors: { core: Color; frontGlow: Color; backGlow: Color }[] = [
@@ -101,23 +82,18 @@ export class Renderer {
 
     private aspectRatio: number;
     private lineWidth: number = 0.002;
-    private segmentScratch: Float32Array = new Float32Array(floatsPerSegment);
 
-    private lastTailTick: number = 0;
-    private localIndex: number = -1;   // this client's own player index, or -1 until known
-    private playoutTick: number = 0;   // interpolation clock for remote players, in server-tick units
-    private lastFrameTime: number = 0;
-
+    private localIndex = -1;
+    private round = 0;
+    private playing = false;
+    private playout = new PlayoutClock();
     private clock: Clock | null = null;
-    private moveSpeed: number = 0.3;
-    private inputSeq: number = 0;                                              // last assigned local input sequence
-    private pendingTurns: { seq: number; dir: Direction; tick: number }[] = []; // predicted turns awaiting server ack
-    private localAuthHeadTick: number = 0;                                     // server tick of the local player's authoritative head
-    private lastLocalDir: [number, number] | null = null;                      // last known local heading (geometry fallback)
-    private localRenderCount: number = 0;                                      // segments to draw for the local player this frame
-    private renderLoopStarted: boolean = false;
-    private inCountdown: boolean = false;
-    private countdownTimeout: ReturnType<typeof setTimeout> | null = null;
+    private moveSpeed = 0.3;
+    private inputSeq = 0;
+    private pendingTurns: Turn[] = [];
+    private renderLoopStarted = false;
+    private inCountdown = false;
+    private startsAt: number | null = null;
 
     private indicatorVao: WebGLVertexArrayObject;
     private indicatorVbo: WebGLBuffer;
@@ -360,31 +336,51 @@ export class Renderer {
         this.gl.viewport(0, 0, this.gl.canvas.width, this.gl.canvas.height);
     }
 
-    prepareRound() {
-        this.inCountdown = true;
-        this.lastTailTick = 0;
-        this.playoutTick = 0;
-        this.pendingTurns.length = 0;
-        this.lastLocalDir = null;
-        this.localAuthHeadTick = 0;
-        this.localRenderCount = 0;
+    prepareRound(info: { round: number; startsAt: number | null }) {
+        this.round = info.round;
+        this.startsAt = info.startsAt;
+        this.inCountdown = info.startsAt !== null;
+        this.playing = false;
+        this.playout = new PlayoutClock();
+        this.pendingTurns = [];
+        this.inputSeq = 0;
         for (const player of this.players.values()) {
-            player.segments = [];
+            player.motion = new MotionHistory();
+            player.segments = player.motion.segments;
+            player.renderCount = 0;
             player.spawnPosition = null;
-            player.tailSamples.length = 0;
             player.dead = false;
         }
-        if (this.countdownTimeout) {
-            clearTimeout(this.countdownTimeout);
-        }
-        this.countdownTimeout = setTimeout(() => {
-            this.inCountdown = false;
-            this.countdownTimeout = null;
-        }, 3000);
     }
 
-    setLocalIndex(index: number) {
-        this.localIndex = index;
+    synchronize(state: GameSync) {
+        this.updateGameSettings(state.settings);
+        this.prepareRound(state);
+        this.playing = state.playing;
+        this.inputSeq = state.ack;
+        this.localIndex = state.self;
+        for (const id of this.players.keys()) {
+            if (!state.players.some(player => player.id === id)) this.removePlayer(id);
+        }
+        for (const info of state.players) {
+            this.modifyPlayer(info);
+            const player = this.players.get(info.id)!;
+            player.motion.patch(0, info.segments, state.tick);
+            if (info.segments.length) {
+                player.motion.snapshot({ index: info.index, segmentIndex: info.segments.length - 1,
+                    segments: info.segments.slice(-snapshotHistory), direction: info.direction, dead: info.dead }, state.tick);
+                player.spawnPosition = info.segments[0][0];
+            }
+            player.segments = player.motion.segments;
+            player.dead = info.dead;
+            this.uploadPlayerSegments(player);
+        }
+        this.worldSegments = state.world;
+        this.portalSegments = state.portals.flat();
+        this.portalPairCount = state.portals.length;
+        this.uploadWorldSegments();
+        this.uploadPortalSegments();
+        this.playout.observe(state.tick, performance.now());
     }
 
     markDead(id: string) {
@@ -407,29 +403,17 @@ export class Renderer {
         return id ? this.players.get(id) : undefined;
     }
 
-    // Current predicted heading: the last pending turn, else the authoritative growing-segment direction.
-    private predictedDir(local: Player): [number, number] | null {
-        if (this.pendingTurns.length > 0) {
-            return directionToVector(this.pendingTurns[this.pendingTurns.length - 1].dir);
-        }
-        const n = local.segments.length;
-        if (n === 0) return this.lastLocalDir;
-        const q = local.segments[n - 1][0];
-        const head = local.segments[n - 1][1];
-        return axisUnit(head[0] - q[0], head[1] - q[1]) ?? this.lastLocalDir;
-    }
-
     // Called on every local direction input. Assigns a sequence number, predicts the turn locally if
     // valid, and returns the sequence for the caller to send to the server.
     onLocalTurn(direction: Direction): { seq: number; tick: number } {
         const seq = ++this.inputSeq;
         let tick = 0; // 0 tells the server not to lag-compensate (no local prediction happened)
         const local = this.getLocalPlayer();
-        if (predictLocal && this.clock?.synced && local && !local.dead && !this.inCountdown && local.segments.length > 0) {
-            const dir = this.predictedDir(local);
-            if (dir && isValidTurn(dir, direction)) {
+        if (this.playing && this.clock?.synced && local && !local.dead && !this.inCountdown && local.motion.head) {
+            const dir = this.pendingTurns.at(-1)?.d ?? local.motion.head.direction;
+            if (canTurn(dir, direction)) {
                 tick = this.clock.serverTickNow();
-                this.pendingTurns.push({ seq, dir: direction, tick });
+                this.pendingTurns.push({ s: seq, d: direction, t: tick });
             }
         }
         return { seq, tick };
@@ -460,7 +444,8 @@ export class Renderer {
                 segments: [],
                 segmentCapacity: 0,
                 spawnPosition: null,
-                tailSamples: [],
+                motion: new MotionHistory(),
+                renderCount: 0,
                 dead: false
             };
             this.players.set(playerInfo.id, player);
@@ -560,12 +545,6 @@ export class Renderer {
         this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * uploadStartIndex, this.segmentsToVertices(uploadSegments));
     }
 
-    private uploadPlayerSegment(player: Player, segmentIndex: number) {
-        this.segmentToVertices(player.segments[segmentIndex], this.segmentScratch, 0);
-        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * segmentIndex, this.segmentScratch);
-    }
-
     private uploadWorldSegments() {
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.worldVbo);
         this.gl.bufferData(this.gl.ARRAY_BUFFER, this.segmentsToVertices(this.worldSegments), this.gl.STATIC_DRAW);
@@ -654,17 +633,12 @@ export class Renderer {
         }
 
         const view = new DataView(buffer);
-        const ackSeq = view.getUint32(gameStatePacket.ackSeqOffset, true);
+        const round = view.getUint32(gameStatePacket.roundOffset, true);
+        const tick = view.getUint32(gameStatePacket.tickOffset, true);
+        if (round !== this.round) return;
         const numPlayers = view.getUint8(gameStatePacket.playerCountOffset);
         const headerSize = gameStatePacket.headerBytes + numPlayers * gameStatePacket.playerHeaderBytes;
-        if (buffer.byteLength < headerSize) {
-            return;
-        }
-
-        // Drop predicted turns the server has now processed; the rest are replayed on top of the authoritative state.
-        while (this.pendingTurns.length > 0 && this.pendingTurns[0].seq <= ackSeq) {
-            this.pendingTurns.shift();
-        }
+        if (buffer.byteLength < headerSize) return;
 
         let offset = gameStatePacket.headerBytes;
         let segmentOffset = headerSize;
@@ -687,11 +661,6 @@ export class Renderer {
             }
 
             const player = this.players.get(playerId)!;
-            if (startIndex > player.segments.length) {
-                segmentOffset += segmentBytes;
-                continue;
-            }
-
             const segments: Segment[] = [];
 
             if (this.inCountdown && player.spawnPosition === null && numSegments > 0) {
@@ -703,171 +672,58 @@ export class Renderer {
                 segmentOffset += gameStatePacket.segmentBytes;
             }
 
-            const prevGrowingStart = player.segments.length > 0 ? player.segments[player.segments.length - 1][0] : null;
-            player.segments.splice(startIndex, player.segments.length - startIndex, ...segments);
+            player.motion.patch(startIndex, segments, tick);
+            player.segments = player.motion.segments;
             this.uploadPlayerSegments(player, startIndex);
+        }
+    }
 
-            // A new growing segment (turn / spawn / portal) invalidates the remote interpolation samples.
-            const growingStart = player.segments.length > 0 ? player.segments[player.segments.length - 1][0] : null;
-            if (growingStart && (!prevGrowingStart || prevGrowingStart[0] !== growingStart[0] || prevGrowingStart[1] !== growingStart[1])) {
-                player.tailSamples.length = 0;
+    updateGameTail(state: Snapshot) {
+        this.playout.observe(state.tick, performance.now());
+        this.playing = state.playing;
+        if (state.playing) this.inCountdown = false;
+        for (const head of state.players) {
+            const id = this.indexToId.get(head.index);
+            const player = id ? this.players.get(id) : undefined;
+            if (!player || !player.motion.snapshot(head, state.tick)) continue;
+            player.segments = player.motion.segments;
+            player.dead = head.dead;
+            if (head.index === this.localIndex) {
+                this.pendingTurns = this.pendingTurns.filter(turn => turn.s > state.ack);
             }
         }
     }
 
-    updateGameTail(data: ArrayBuffer | Uint8Array) {
-        const view = data instanceof Uint8Array
-            ? new DataView(data.buffer, data.byteOffset, data.byteLength)
-            : new DataView(data);
-        if (view.byteLength < gameTailPacket.headerBytes) {
-            return;
-        }
-
-        // Datagrams can arrive out of order; ignore any tail older than the newest already applied.
-        const tick = view.getUint32(gameTailPacket.tickOffset, true);
-        if (tick < this.lastTailTick) {
-            return;
-        }
-        this.lastTailTick = tick;
-
-        const localId = this.getLocalId();
-        const numPlayers = view.getUint8(gameTailPacket.playerCountOffset);
-        const expectedBytes = gameTailPacket.headerBytes + numPlayers * gameTailPacket.playerBytes;
-        if (view.byteLength < expectedBytes) {
-            return;
-        }
-
-        let offset = gameTailPacket.headerBytes;
-        for (let p = 0; p < numPlayers; p++) {
-            const playerIndex = view.getUint16(offset + gameTailPacket.playerIndexOffset, true);
-            const segmentIndex = view.getUint16(offset + gameTailPacket.playerSegmentIndexOffset, true);
-            const end: [number, number] = [
-                uint16ToCoord(view.getUint16(offset + gameTailPacket.playerEndXOffset, true), -this.aspectRatio, this.aspectRatio),
-                uint16ToCoord(view.getUint16(offset + gameTailPacket.playerEndYOffset, true), -1.0, 1.0)
-            ];
-            offset += gameTailPacket.playerBytes;
-
-            const playerId = this.indexToId.get(playerIndex);
-            if (!playerId || !this.players.has(playerId)) {
-                continue;
-            }
-
-            const player = this.players.get(playerId)!;
-            if (segmentIndex !== player.segments.length - 1) {
-                continue;
-            }
-
-            if (playerId === localId) {
-                // local player: record the authoritative head + its tick as the prediction anchor
-                player.segments[segmentIndex][1] = end;
-                this.localAuthHeadTick = tick;
-                this.uploadPlayerSegment(player, segmentIndex);
-            } else {
-                player.tailSamples.push({ tick, end });
-                if (player.tailSamples.length > maxTailSamples) {
-                    player.tailSamples.shift();
-                }
-            }
-        }
+    private uploadRenderedTrail(player: Player, trail: Segment[], history: number) {
+        const grew = this.ensureSegmentCapacity(player, trail.length);
+        const start = grew ? 0 : Math.max(0, Math.min(player.renderCount, trail.length) - history);
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
+        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, start * floatsPerSegment * 4, this.segmentsToVertices(trail.slice(start)));
+        player.renderCount = trail.length;
     }
 
-    // Advances the playout clock and interpolates each remote player's growing head to it.
     private updateRemoteHeads() {
-        const now = performance.now();
-        const dt = this.lastFrameTime > 0 ? now - this.lastFrameTime : 0;
-        this.lastFrameTime = now;
-
-        if (this.lastTailTick === 0) {
-            return;
-        }
-        const target = this.lastTailTick - remoteDelayTicks;
-        if (this.playoutTick === 0) {
-            this.playoutTick = target;
-        } else {
-            this.playoutTick += dt / (1000 / tickRate);              // advance at real time, in tick units
-            this.playoutTick += (target - this.playoutTick) * playoutSlew; // correct drift toward the delay target
-        }
-
+        const tick = this.playout.sample(performance.now());
         const localId = this.getLocalId();
         for (const player of this.players.values()) {
-            if (player.segments.length === 0 || player.id === localId || player.dead) {
-                continue;
-            }
-            this.uploadGrowingHead(player, this.interpolateHead(player));
+            if (player.id !== localId) this.uploadRenderedTrail(player, player.motion.trailAt(tick, this.playing ? this.moveSpeed : 0), snapshotHistory + 1);
         }
-    }
-
-    private interpolateHead(player: Player): [number, number] {
-        const samples = player.tailSamples;
-        const start = player.segments[player.segments.length - 1][0];
-        if (samples.length === 0 || this.playoutTick < samples[0].tick) {
-            return [start[0], start[1]];
-        }
-        for (let i = 1; i < samples.length; i++) {
-            if (this.playoutTick <= samples[i].tick) {
-                const a = samples[i - 1];
-                const b = samples[i];
-                const f = (this.playoutTick - a.tick) / (b.tick - a.tick || 1);
-                return [a.end[0] + (b.end[0] - a.end[0]) * f, a.end[1] + (b.end[1] - a.end[1]) * f];
-            }
-        }
-        const last = samples[samples.length - 1].end;
-        return [last[0], last[1]];
-    }
-
-    private uploadGrowingHead(player: Player, head: [number, number]) {
-        const last = player.segments.length - 1;
-        this.segmentToVertices([player.segments[last][0], head], this.segmentScratch, 0);
-        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, player.vbo);
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, floatsPerSegment * 4 * last, this.segmentScratch);
-    }
-
-    // Rebuilds the local trail from the authoritative committed segments plus predicted (unacked) turns,
-    // advancing the head to the current server time. Returns null to fall back to authoritative rendering.
-    private reconstructLocalTrail(local: Player): Segment[] | null {
-        if (this.localAuthHeadTick === 0) return null; // no authoritative head sample yet this round
-        const n = local.segments.length;
-        const q = local.segments[n - 1][0];
-        const authHead = local.segments[n - 1][1];
-        const dir = axisUnit(authHead[0] - q[0], authHead[1] - q[1]) ?? this.lastLocalDir;
-        if (!dir) return null;
-        this.lastLocalDir = dir;
-
-        const now = this.clock!.serverTickNow();
-        const result: Segment[] = local.segments.slice(0, n - 1);
-        let start: [number, number] = [q[0], q[1]];
-        let pos: [number, number] = [authHead[0], authHead[1]];
-        let tick = this.localAuthHeadTick;
-        let heading = dir;
-
-        for (const turn of this.pendingTurns) {
-            const advance = this.moveSpeed * (turn.tick - tick) * secondsPerTick;
-            const corner: [number, number] = [pos[0] + heading[0] * advance, pos[1] + heading[1] * advance];
-            result.push([start, corner]);
-            start = corner;
-            pos = corner;
-            tick = turn.tick;
-            heading = directionToVector(turn.dir);
-        }
-        const advance = this.moveSpeed * (now - tick) * secondsPerTick;
-        result.push([start, [pos[0] + heading[0] * advance, pos[1] + heading[1] * advance]]);
-        return result;
     }
 
     private updateLocalHead() {
         const local = this.getLocalPlayer();
-        if (!local || local.segments.length === 0) {
-            this.localRenderCount = 0;
-            return;
+        if (!local) return;
+        const head = local.motion.head;
+        let trail = local.segments;
+        if (head) {
+            // Keep committed history, but anchor prediction only to a coherent snapshot.
+            const authoritative = local.segments.slice(0, head.segmentIndex + 1 - head.segments.length).concat(head.segments);
+            trail = this.playing && this.clock?.synced && !head.dead && !this.inCountdown
+                ? predictTrail({ tick: head.tick, direction: head.direction, segments: authoritative },
+                    this.pendingTurns, this.clock.serverTickNow(), this.moveSpeed, this.lineWidth)
+                : authoritative;
         }
-        const predicted = predictLocal && this.clock?.synced && !local.dead
-            ? this.reconstructLocalTrail(local)
-            : null;
-        const trail = predicted ?? local.segments;
-        this.localRenderCount = trail.length;
-        this.ensureSegmentCapacity(local, trail.length);
-        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, local.vbo);
-        this.gl.bufferSubData(this.gl.ARRAY_BUFFER, 0, this.segmentsToVertices(trail));
+        this.uploadRenderedTrail(local, trail, inputWindow + snapshotHistory);
     }
 
     renderLoop() {
@@ -879,6 +735,7 @@ export class Renderer {
     }
 
     private renderFrame() {
+        if (this.inCountdown && this.startsAt !== null && this.clock?.synced && this.clock.serverTickNow() >= this.startsAt) this.inCountdown = false;
         this.resize();
         this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
@@ -930,9 +787,8 @@ export class Renderer {
         this.updateRemoteHeads();
         this.updateLocalHead();
 
-        const localId = this.getLocalId();
         for (const player of this.players.values()) {
-            const count = player.id === localId ? this.localRenderCount : player.segments.length;
+            const count = player.renderCount;
             if (count === 0) {
                 continue;
             }
