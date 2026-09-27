@@ -29,7 +29,7 @@ export class MotionHistory {
         });
     }
     trailAt(tick: number, speed: number): Segment[] {
-        if (!this.head) return this.segments;
+        if (!this.head || speed === 0) return this.segments;
         const next = this.samples.find(sample => sample.tick >= tick) ?? this.head;
         const trail = this.segments.slice(0, next.segmentIndex + 1);
         const start = next.segmentIndex + 1 - next.segments.length;
@@ -67,6 +67,8 @@ export class PlayoutClock {
         this.received = now;
     }
     sample(now: number) {
+        // Rendering can start before the first snapshot establishes the server timeline.
+        if (this.latest === 0) return 0;
         const delay = Math.min(6, 2 + this.jitter * 2);
         const target = this.latest + (now - this.received) * tickRate / 1000 - delay;
         const step = Math.max(0, now - this.lastFrame) * tickRate / 1000;
