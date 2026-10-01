@@ -4,15 +4,12 @@ import { canTurn, turnStart } from "../shared/movement.js";
 import { coordToUint16, directionToVector, Direction, gameStatePacket, tickRate, uint16Max, worldStatePacket, isFieldShape } from "../shared/model.js";
 import {
     buildFieldSegments,
-    getConvexHull,
     getFieldMinRadius,
     getPortalCapSegments,
-    getSegmentIntersection,
     isPointInField,
-    isPointInPolygon,
     isSegmentInField,
     pointToSegmentDistanceSq,
-    segmentToQuad
+    getLineCollision
 } from "../shared/geometry.js";
 import type { Point, Segment, PortalPair, PlayerInfo, GameSettings, FieldShape } from "../shared/model.js";
 
@@ -477,45 +474,7 @@ export class Game {
     }
 
     private lineToLineCollision(line1: Segment, line2: Segment): Point | null {
-        const dx = line1[1][0] - line1[0][0];
-        const dy = line1[1][1] - line1[0][1];
-        const length = Math.hypot(dx, dy);
-        if (length === 0) {
-            return null;
-        }
-
-        const normal: Point = [-dy / length * this.lineWidth, dx / length * this.lineWidth];
-        const quad = segmentToQuad(line2, this.lineWidth);
-        if (!quad) {
-            return null;
-        }
-        const collisionPolygon = getConvexHull(quad.flatMap(point => [
-            [point[0] + normal[0], point[1] + normal[1]] as Point,
-            [point[0] - normal[0], point[1] - normal[1]] as Point
-        ]));
-
-        if (isPointInPolygon(line1[0], collisionPolygon)) {
-            return line1[0];
-        }
-
-        let closestCollision: Point | null = null;
-        let closestDistSq = Infinity;
-        for (let i = 0; i < collisionPolygon.length; i++) {
-            const edge: Segment = [collisionPolygon[i], collisionPolygon[(i + 1) % collisionPolygon.length]];
-            const collision = getSegmentIntersection(line1, edge);
-            if (!collision) {
-                continue;
-            }
-
-            const dx = collision[0] - line1[0][0];
-            const dy = collision[1] - line1[0][1];
-            const distSq = dx * dx + dy * dy;
-            if (distSq < closestDistSq) {
-                closestDistSq = distSq;
-                closestCollision = collision;
-            }
-        }
-        return closestCollision;
+        return getLineCollision(line1, line2, this.lineWidth);
     }
 
     private getPortalNormal(segment: Segment): Point {

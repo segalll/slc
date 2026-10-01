@@ -184,3 +184,50 @@ export const isPointInField = (point: Point, fieldSegments: Segment[], margin: n
 export const isSegmentInField = (segment: Segment, fieldSegments: Segment[], margin: number = 0) => {
     return isPointInField(segment[0], fieldSegments, margin) && isPointInField(segment[1], fieldSegments, margin);
 }
+
+export const getLineCollision = (line1: Segment, line2: Segment, lineWidth: number): Point | null => {
+    // Skip distant trails before constructing their collision polygon.
+    for (const axis of [0, 1] as const) {
+        if (Math.min(line1[0][axis], line1[1][axis]) > Math.max(line2[0][axis], line2[1][axis]) + 2 * lineWidth ||
+            Math.max(line1[0][axis], line1[1][axis]) < Math.min(line2[0][axis], line2[1][axis]) - 2 * lineWidth) return null;
+    }
+    const dx = line1[1][0] - line1[0][0];
+    const dy = line1[1][1] - line1[0][1];
+    const length = Math.hypot(dx, dy);
+    if (length === 0) {
+        return null;
+    }
+
+    const normal: Point = [-dy / length * lineWidth, dx / length * lineWidth];
+    const quad = segmentToQuad(line2, lineWidth);
+    if (!quad) {
+        return null;
+    }
+    const collisionPolygon = getConvexHull(quad.flatMap(point => [
+        [point[0] + normal[0], point[1] + normal[1]] as Point,
+        [point[0] - normal[0], point[1] - normal[1]] as Point
+    ]));
+
+    if (isPointInPolygon(line1[0], collisionPolygon)) {
+        return line1[0];
+    }
+
+    let closestCollision: Point | null = null;
+    let closestDistSq = Infinity;
+    for (let i = 0; i < collisionPolygon.length; i++) {
+        const edge: Segment = [collisionPolygon[i], collisionPolygon[(i + 1) % collisionPolygon.length]];
+        const collision = getSegmentIntersection(line1, edge);
+        if (!collision) {
+            continue;
+        }
+
+        const dx = collision[0] - line1[0][0];
+        const dy = collision[1] - line1[0][1];
+        const distSq = dx * dx + dy * dy;
+        if (distSq < closestDistSq) {
+            closestDistSq = distSq;
+            closestCollision = collision;
+        }
+    }
+    return closestCollision;
+}

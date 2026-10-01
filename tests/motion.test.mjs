@@ -27,17 +27,42 @@ test('remote trails remain visible when rendering starts before snapshots arrive
         const now = 1017 + (tick - 6000) * 1000 / 60;
         clock.observe(tick, now);
         motion.snapshot(head((tick - 6000) * 0.3 / 60), tick);
-        trail = motion.trailAt(clock.sample(now), 0.3);
+        trail = motion.trailAt(clock.sample(now));
     }
     assert.ok(trail[0][1][0] > 0.27, 'the remote player should have a visible growing trail');
 });
 
-test('paused trails use the final position without replaying buffered movement', () => {
+test('stopping finishes buffered movement smoothly and then remains stationary', () => {
+    const motion = new MotionHistory();
+    motion.snapshot(head(0.49), 98);
+    motion.snapshot(head(0.5), 100);
+    const before = motion.trailAt(99).at(-1)[1];
+    motion.snapshot(head(0.505), 101);
+    motion.snapshot(head(0.505), 107);
+    assert.deepEqual(motion.trailAt(99).at(-1)[1], before);
+    for (const tick of [100, 100.5, 101]) {
+        assert.ok(Math.abs(motion.trailAt(tick).at(-1)[1][0] - (0.5 + (tick - 100) * 0.005)) < 1e-9);
+    }
+    for (const tick of [102, 105, 107, 110]) {
+        assert.deepEqual(motion.trailAt(tick).at(-1)[1], [0.505, 0]);
+    }
+});
+
+test('a death snapshot approaches the collision point without jumping', () => {
+    const motion = new MotionHistory();
+    motion.snapshot(head(0.49), 98);
+    motion.snapshot({ ...head(0.5), dead: true }, 100);
+    assert.deepEqual(motion.trailAt(99).at(-1)[1], [0.495, 0]);
+    motion.snapshot({ ...head(0.5), dead: true }, 106);
+    assert.deepEqual(motion.trailAt(103).at(-1)[1], [0.5, 0]);
+});
+
+test('interpolation follows the trail across a corner instead of cutting diagonally', () => {
     const motion = new MotionHistory();
     motion.snapshot(head(0.1), 100);
-    motion.snapshot(head(0.2), 120);
-    motion.snapshot(head(0.3), 140);
-    for (const tick of [100, 115, 130, 140, 150]) {
-        assert.deepEqual(motion.trailAt(tick, 0)[0][1], [0.3, 0]);
-    }
+    motion.snapshot({ ...head(0), segmentIndex: 1, direction: 0,
+        segments: [[[0, 0], [0.2, 0]], [[0.2, 0], [0.2, 0.1]]] }, 140);
+    const [x, y] = motion.trailAt(110).at(-1)[1];
+    assert.ok(Math.abs(x - 0.15) < 1e-9);
+    assert.equal(y, 0);
 });

@@ -28,13 +28,20 @@ export class MotionHistory {
             }
         });
     }
-    trailAt(tick: number, speed: number): Segment[] {
-        if (!this.head || speed === 0) return this.segments;
+    trailAt(tick: number): Segment[] {
+        if (!this.head) return this.segments;
         const next = this.samples.find(sample => sample.tick >= tick) ?? this.head;
+        const previous = this.samples[Math.max(0, this.samples.indexOf(next) - 1)];
         const trail = this.segments.slice(0, next.segmentIndex + 1);
         const start = next.segmentIndex + 1 - next.segments.length;
         next.segments.forEach((segment, i) => { trail[start + i] = [[...segment[0]], [...segment[1]]]; });
-        let distance = next.dead ? 0 : Math.max(0, next.tick - tick) * speed / tickRate;
+        // Interpolate observed travel: identical idle/dead snapshots have zero movement.
+        let distance = 0;
+        for (let i = Math.max(start, previous.segmentIndex); i < trail.length; i++) {
+            const from = i === previous.segmentIndex ? previous.segments.at(-1)![1] : trail[i][0];
+            distance += Math.hypot(trail[i][1][0] - from[0], trail[i][1][1] - from[1]);
+        }
+        distance *= next.tick === previous.tick ? 0 : Math.max(0, Math.min(1, (next.tick - tick) / (next.tick - previous.tick)));
         // Walk backwards over actual corners/portals instead of interpolating a diagonal.
         while (trail.length > start && distance > 0) {
             const segment = trail[trail.length - 1];

@@ -706,7 +706,7 @@ export class Renderer {
         const tick = this.playout.sample(performance.now());
         const localId = this.getLocalId();
         for (const player of this.players.values()) {
-            if (player.id !== localId) this.uploadRenderedTrail(player, player.motion.trailAt(tick, this.playing ? this.moveSpeed : 0), snapshotHistory + 1);
+            if (player.id !== localId) this.uploadRenderedTrail(player, player.motion.trailAt(tick), snapshotHistory + 1);
         }
     }
 
@@ -720,7 +720,8 @@ export class Renderer {
             const authoritative = local.segments.slice(0, head.segmentIndex + 1 - head.segments.length).concat(head.segments);
             trail = this.playing && this.clock?.synced && !head.dead && !this.inCountdown
                 ? predictTrail({ tick: head.tick, direction: head.direction, segments: authoritative },
-                    this.pendingTurns, this.clock.serverTickNow(), this.moveSpeed, this.lineWidth)
+                    this.pendingTurns, this.clock.serverTickNow(), this.moveSpeed, this.lineWidth,
+                    [...this.players.values()].filter(player => player !== local).map(player => player.segments))
                 : authoritative;
         }
         this.uploadRenderedTrail(local, trail, inputWindow + snapshotHistory);
